@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+
+PROJECT=$1
+
+WHEEL_DIR=$HOME/wheels/${PROJECT}
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+PROJECT_DIR="$(dirname ${SCRIPT_DIR})"
+
+module purge --force
+# module add 'cuda/8.0.44' 'cudnn/7.0' 'python/2.7.13' 'python27-scipy-stack/2017a' 'nixpkgs/16.09' 'gcc/5.4.0' 'openmpi/2.1.1' 'python27-mpi4py/2.0.0' 'imkl/2017.1.132' 'opencv/2.4.13.3'
+module load 'nixpkgs/16.09' 'gcc/5.4.0' 'cuda/8.0.44' 'cudnn/7.0' 'python/2.7.13' 'python27-scipy-stack/2017a' 'openmpi/2.1.1' 'imkl/2017.1.132' 'opencv/2.4.13.3'
+
+echo "Modules loaded"
+module list
+
+cd $HOME/scratch
+
+model=$2
+
+exp=$3
+
+exp_options=${@:4}
+
+cluster=$CC_CLUSTER
+
+database="${PROJECT}_${model}_${exp}"
+
+echo Cluster is $cluster
+
+# For Cedar
+if [ "$cluster" = "cedar" ]
+then
+    sd_options="--coresPerNode 24 --gpusPerNode 4 --sbatchFlags='--account=rpp-bengioy --mem=126000M'"
+    exp_options="${exp} ${exp_options} --gpu-id [0 0 1 1 2 2 3 3]"
+elif [ "$cluster" = "graham" ]
+then
+    sd_options="--coresPerNode 32 --gpusPerNode 2 --sbatchFlags='--account=def-bengioy --mem=126000M'"
+    exp_options="${exp} ${exp_options} --gpu-id [0 0 1 1]"
+fi
+
+exploration_script="\\\$SLURM_TMPDIR/virtualenvs/${PROJECT}/lib/python2.7/site-packages/${PROJECT}/explorations/${model}.py"
+read -r -d '' sd_command << EOM
+smart-dispatch \
+    -vv \
+    --queueName dummy \
+    --batchName $database \
+    --walltime 2:59:00 \
+    --coresPerCommand 3 \ 
+    --gpusPerCommand 0.5 \
+    ${sd_options} \ 
+    --autoresume \
+    launch ${SCRIPT_DIR}/opt-run \
+        ${exploration_script} \
+        ${exp_options}
+EOM
+
+### 
+# Build virtual-env
+###
+
+read -p "Do you want to update the wheel-house? " -n 1 -r
+echo    # (optional) move to a new line
+if [[ $REPLY =~ ^[Yy]$ ]]
+then
+    # smartdispatch, sacred and ${PROJECT} are likely to change from one launch to
+    # another, so the wheel needs to be kept up to date. Other wheels are created in
+    # the install.sh script.
+    
+    echo "Creating an up-to-date wheel-house"
+    pip wheel --wheel-dir=$WHEEL_DIR $HOME/${PROJECT}/smartdispatch
+    pip wheel --wheel-dir=$WHEEL_DIR $HOME/${PROJECT}/sacred
+    
+    # Create ${PROJECT} whitin a virtualenv to satisfy dependencies
+    virtualenv $HOME/tmp_${PROJECT}_env
+    source $HOME/tmp_${PROJECT}_env/bin/activate
+      pip wheel --wheel-dir=$WHEEL_DIR $HOME/${PROJECT} --no-deps protopt
+
+      bash ${PROJECT_DIR}/install_requirements.sh $PROJECT ${PROJECT_PATH}
+      pip wheel --wheel-dir=$WHEEL_DIR $HOME/${PROJECT} --no-deps $PROJECT
+    deactivate
+    rm -rf $HOME/tmp_${PROJECT}_env
+else
+    echo "Using current wheel house as is."
+fi
+
+echo "The following command will be executed 5 times."
+echo ${sd_command}
+read -p "Press enter to proceed or CTRL-C to cancel"
+
+# virtualenv $HOME/tmp_smartdispatch_env
+# source $HOME/tmp_smartdispatch_env/bin/activate
+pip install --user --use-wheel --no-index --find-links=$WHEEL_DIR subprocess32
+pip install --user --use-wheel --no-index --find-links=$WHEEL_DIR smart_dispatch
+    eval ${sd_command}
+    eval ${sd_command}
+    eval ${sd_command}
+    eval ${sd_command}
+    eval ${sd_command}
+# deactivate
+# rm -rf $HOME/tmp_smartdispatch_env

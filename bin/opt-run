@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+
+PROJECT=$1
+PROJECT_PATH=$2
+
+export HOME=`getent passwd $USER | cut -d':' -f6`
+source ~/.bashrc
+
+WHEEL_DIR=$HOME/wheels/${PROJECT}
+SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
+PROTOPT_DIR="$(dirname ${SCRIPT_DIR})"
+
+export PYTHONUNBUFFERED=1
+echo Running on $HOSTNAME
+echo Running script ${SCRIPT_DIR}/$0
+
+module purge --force
+# module add 'cuda/8.0.44' 'cudnn/7.0' 'python/2.7.13' 'python27-scipy-stack/2017a' 'nixpkgs/16.09' 'gcc/5.4.0' 'openmpi/2.1.1' 'python27-mpi4py/2.0.0' 'imkl/2017.1.132' 'opencv/2.4.13.3'
+module load 'nixpkgs/16.09' 'gcc/5.4.0' 'cuda/8.0.44' 'cudnn/7.0' 'python/2.7.13' 'python27-scipy-stack/2017a' 'openmpi/2.1.1' 'imkl/2017.1.132' 'opencv/2.4.13.3'
+
+echo "Modules loaded"
+module list
+
+
+function log {
+    echo "$BASHPID $1"
+    echo "$BASHPID $1" >&2
+}
+
+
+function lockable {
+    if [[ ! -f "$1/locked" && ! -f "$1/unlocked" ]]
+    then
+        log "creating unlocked"
+        touch $1/unlocked
+    fi
+}
+
+
+function lock {
+    if [ -z ${2+x} ]
+    then
+        timeout=5
+    else
+        timeout=$2
+    fi
+
+    starttime=$(date +%s)
+    while true;
+    do
+        mv $1/unlocked $1/locked > /dev/null 2>&1
+        status=$?
+
+        timeelapsed=$(($(date +%s) - $starttime))
+        if [ $status == 0 ]
+        then
+            break
+        elif [ $timeelapsed -ge $timeout ]
+        then
+            log "FATAL ERROR; LOCK TIMEOUT"
+            break
+        fi
+        sleep 1
+    done
+    return $status
+}
+
+
+function unlock {
+    mv $1/locked $1/unlocked > /dev/null 2>&1
+    status=$?
+    if [ $status -ne 0 ]
+    then
+        log "FATAL ERROR; LOCKED LOST"
+    fi
+    return $status
+}
+
+VIRTUAL_ENV_DIR=$SLURM_TMPDIR/virtualenvs/${PROJECT}
+mkdir -p $VIRTUAL_ENV_DIR
+log "enable lock on $VIRTUAL_ENV_DIR"
+
+lockable $VIRTUAL_ENV_DIR
+
+log "acquire lock on $VIRTUAL_ENV_DIR"
+if lock $VIRTUAL_ENV_DIR 1800
+then
+    log "acquired lock on $VIRTUAL_ENV_DIR"
+
+    if [ ! -f "$VIRTUAL_ENV_DIR/bin/activate" ]
+    then
+        
+        log "Creating the virtualenv"
+        virtualenv $VIRTUAL_ENV_DIR
+
+	# Hugly fix for _tkinter
+	cd $VIRTUAL_ENV_DIR/lib/python2.7
+            for l in $(find . -type l); do mv $l $l.bak; ln -s $EBROOTPYTHON/lib/python2.7/$l $l; done
+	cd -
+
+        source $VIRTUAL_ENV_DIR/bin/activate
+
+        log "Installing wheels in the virtualenv"
+        bash ${PROTOPT_DIR}/install_requirements.sh $PROJECT ${PROJECT_PATH}
+
+        pip install --use-wheel --no-index --find-links=$WHEEL_DIR ${PROJECT}
+    else
+        log "Virtualenv already existing"
+        source $VIRTUAL_ENV_DIR/bin/activate
+    fi
+
+    if unlock $VIRTUAL_ENV_DIR
+    then
+        log "released lock on $VIRTUAL_ENV_DIR"
+    else
+        log "could not release the lock on $VIRTUAL_ENV_DIR"
+    fi
+else
+    log "could not lock on $VIRTUAL_ENV_DIR"
+fi
+
+log "Listing available packages with pip"
+pip list --format freeze
+
+
+cat $VIRTUAL_ENV_DIR/lib/python2.7/site-packages/smartdispatch/utils.py
+
+log "python $@"
+echo "python $@"
+python $@
