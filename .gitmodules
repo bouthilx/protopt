@@ -1,0 +1,3 @@
+[submodule "sacred"]
+	path = sacred
+	url = git@github.com:bouthilx/sacred.git
