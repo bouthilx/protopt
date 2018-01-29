@@ -1,5 +1,20 @@
 from collections import OrderedDict
+import copy
 import functools
+
+import numpy
+
+from skopt import Space as SkoptSpace
+from skopt.space import Real
+from skopt.utils import check_x_in_space
+
+
+class Integer(Real):
+    def __repr__(self):
+        return super(Integer, self).__repr__().replace("Real", "Integer")
+
+    def inverse_transform(self, Xt):
+        return super(Integer, self).inverse_transform(Xt).astype(numpy.int)
 
 
 class Space(object):
@@ -29,6 +44,12 @@ class Space(object):
             for key, value in profile.iteritems():
                 valid = valid and setting.get(key) == value
 
+        skopt_space = SkoptSpace(self.get_spaces().values())
+        try:
+            check_x_in_space(self.dict_to_list(setting), skopt_space)
+        except ValueError as e:
+            valid = False
+
         return valid
 
     def get_spaces(self):
@@ -41,7 +62,7 @@ class Space(object):
         for hp_name, dimension in self.SPACES.iteritems():
             if ((hp_name in self.BASE_SPACE or
                  hp_name in self.MODELS[self.model]) and
-                hp_name not in profiles_hps):
+                    hp_name not in profiles_hps):
 
                 model_spaces[hp_name] = dimension
 
@@ -53,15 +74,12 @@ class Space(object):
                 setting[key] = value
 
     def force_options(self, setting):
-        setting["verbose"] = self.opt.verbose_process
-        setting["print_progress"] = self.opt.debug
+        # setting["verbose"] = self.opt.verbose_process
+        # setting["print_progress"] = self.opt.debug
         setting["gpu_id"] = self.opt.gpu_id
 
     def list_to_dict(self, space):
         setting = dict(zip(self.get_spaces().keys(), space))
-        setting["cuda"] = True
-        setting["validate"] = True
-        setting["depth"] = 4
         self.force_options(setting)
         self.force_profiles(setting)
 
@@ -87,14 +105,33 @@ class Space(object):
     def _validate_sample(space, row):
         setting = space.list_to_dict(row)
 
-        if (setting.get("covariance_penalty", 0.) != 0. and
-                setting.get("normalized_activations", "NONE") != "NONE"):
+        skopt_space = SkoptSpace(space.get_spaces().values())
+        try:
+            check_x_in_space(row, skopt_space)
+        except ValueError:
+            return False
+
+        has_activations_covariance_penalty = (
+            setting.get("activations_covariance_penalty", 0.) >
+            COEFFICIENT_LIMIT)
+        if (has_activations_covariance_penalty and
+                (setting.get("normalized_activations", "NONE") != "NONE")):
+            return False
+
+        if (setting.get("pre_projection_train_simultaneously") and
+                setting.get("pre_projection_train_alternatively")):
+            return False
+
+        # Penalty type must be chosen
+        if (setting.get("pre_projection_train_alternatively") and
+                setting.get("pre_projection_training_penalty") is None):
             return False
 
         for level in ["projections", "activations"]:
             rescaled_key = "rescaled_%s" % level
             normalized_key = "normalized_%s" % level
             centered_key = "centered_%s" % level
+            # epsilon_key = "normalized_epsilon_%s" % level
 
             if setting.get(rescaled_key) == "ALL":
                 if setting.get(normalized_key) != "ALL":

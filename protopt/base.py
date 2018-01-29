@@ -10,7 +10,6 @@ from experiment import Experiment
 from optimizer import Optimizer
 from utils import SacredSelectionError, Interrupt, ClusterProblem
 from sacred_commandline_options import SelectOption, EnforceNewOption
-from wrapper import fake_fct_signature
 
 
 # To shut up pep8. We know they aren't used but we need to import them so that
@@ -23,7 +22,7 @@ DEBUG = "--debug" in sys.argv
 logger = logging.getLogger()
 
 
-def build_parser(models):
+def build_parser(project_name, models):
 
     parser = argparse.ArgumentParser()
 
@@ -33,7 +32,8 @@ def build_parser(models):
               str(models.keys())))
 
     parser.add_argument("--experiment-name", metavar="experiment-name",
-                        help="Experiment name. Default is cesar_{model}")
+                        help=("Experiment name. Default is %s_{model}" %
+                              project_name))
 
     parser.add_argument(
         "--profiles", nargs="*", default=[],
@@ -116,8 +116,8 @@ def build_parser(models):
     return parser
 
 
-def parse_args(models, argv):
-    opt = build_parser(models).parse_args(argv)
+def parse_args(project, models, argv):
+    opt = build_parser(project, models).parse_args(argv)
 
     if opt.debug:
         opt.verbose = 2
@@ -147,22 +147,22 @@ def build_database(opt):
                     opt.replica_set, opt.auth_source)
 
 
-def build_experiment(name, validate_on, space, database, pool_size):
+def build_experiment(name, fct, validate_on, space, database, pool_size):
     optimizer = Optimizer(pool_size, space)
 
     dir_path = os.path.join(os.getcwd(), name)
 
     experiment = Experiment(
-        name=name, dir_path=dir_path, fct=fake_fct_signature,
+        name=name, dir_path=dir_path, fct=fct,
         validate_on=validate_on, space=space,
         optimizer=optimizer, database=database)
 
     return experiment
 
 
-def main_loop(name, validate_on, space, database, pool_size):
+def main_loop(name, fct, validate_on, space, database, pool_size):
 
-    experiment = build_experiment(name, validate_on, space, database,
+    experiment = build_experiment(name, fct, validate_on, space, database,
                                   pool_size)
 
     resilience = 10
@@ -203,6 +203,9 @@ def main_loop(name, validate_on, space, database, pool_size):
                 experiment.exclude(trial)
             else:
                 raise e
+        except KeyboardInterrupt as e:
+            logger.info("Interruption requested by user")
+            return
         except BaseException as e:
             logger.error(str(e))
             resilience -= 1

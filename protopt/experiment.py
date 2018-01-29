@@ -1,6 +1,10 @@
 import itertools
 import logging
 
+import numpy
+
+import pymongo
+
 import smartdispatch.utils
 
 from sacred import host_info_getter
@@ -93,6 +97,7 @@ class Experiment(object):
             # Get the item with key step or take the first smaller or equal
             # value in the sorted list.
             if step in result:
+                step_value = step
                 result = result[step]
             else:
                 sorted_keys = sorted(result.keys())
@@ -106,31 +111,55 @@ class Experiment(object):
                 # Otherwise use last step
                 else:
                     result = result[next_step]
-
+                    step_value = next_step
         elif isinstance(result, dict):
             last_step_key = sorted(result.keys())[-1]
             result = result[last_step_key]
+            step_value = last_step_key
 
         if not isinstance(result, float):
             raise ValueError(
                 "Result considered for the trial must be a float number: "
                 "%s (%s)" % (str(result), str(type(result))))
 
+        # return step_value, result
         return result
 
-    def get_trials(self, query=None, evaluations=False):
+    def get_trials(self, query=None, projection=None, evaluations=False,
+                   iterator=None):
+
+        if iterator is None:
+            iterator = iter
+
         query["experiment.name"] = {"$eq": self.name}
 
         # When not evaluating the test set, validate must always be True
         if not evaluations:
             query["config.validate"] = {"$eq": True}
 
-        rows = self.database.query(query)
-        for row in rows:
-            if evaluations or self.space.validate(row["config"]):
-                yield self._build_trial(row)
+        query.update(self.get_query_for_profile())
 
-    def get_runnable_trials(self):
+        rows = self.database.query(query, projection)
+        for row in iterator(rows):
+            if not self.space.validate(row["config"]):
+                # raise RuntimeError("Invalid row %d" % row["_id"])
+                logger.debug("Invalid row %d" % row["_id"])
+                continue
+
+            yield self._build_trial(row)
+
+            # if evaluations or self.space.validate(row["config"]):
+            #    yield self._build_trial(row)
+
+    def get_query_for_profile(self):
+        query_for_profile = dict()
+        for profile_name, profile in self.space.iter_profiles():
+            for hp_name, hp_value in profile.iteritems():
+                query_for_profile["config.%s" % hp_name] = {"$eq": hp_value}
+
+        return query_for_profile
+
+    def get_runnable_trials(self, force_new=True):
         # Either the trial is queued or was interrupted on the same cluster
         trials = self.get_trials({
             "status": {
@@ -161,7 +190,7 @@ class Experiment(object):
 
         trials, test_trials = itertools.tee(trials)
 
-        if not any(True for i in test_trials):
+        if force_new and not any(True for i in test_trials):
             trials = self.create_new_trials()
 
         return trials
@@ -169,22 +198,49 @@ class Experiment(object):
     def exclude(self, trial):
         self.excluded_trials.add(trial.id)
 
-    def get_completed_trials(self):
-        return self.get_trials({"status": {"$in": status.COMPLETED}})
+    def get_completed_trials(self, **kwargs):
+        return self.get_trials({"status": {"$in": status.COMPLETED}}, **kwargs)
 
     def create_new_trials(self):
         logger.info("Creating new trials")
 
+        strategy = self.optimizer.strategy
+
         x = []
         y = []
-        for trial in self.get_completed_trials():
+        for trial in self.get_trials({}):
             x.append(self.space.dict_to_list(trial.setting))
-            y.append(trial.result)
+
+            if trial.status == "COMPLETED":
+                y.append(trial.result[1])
+            else:
+                if strategy == "cl_min":
+                    y_lie = numpy.min(y) if y else 0.0
+                elif strategy == "cl_mean":
+                    y_lie = numpy.mean(y) if y else 0.0
+                else:
+                    y_lie = numpy.max(y) if y else 0.0
+
+                y.append(y_lie)
 
         x = self.optimizer.get_new_candidates(x, y)
         return self.register_settings(x)
 
     def register_settings(self, settings):
+
+        # TODO might be better to do a direct count rather than iterating over
+        # trials through the interface
+        # (nevertheless there should not be many
+        #  trials since there was not a single one a short time before this
+        #  method was called)
+        runnable_trials = list(self.get_runnable_trials(force_new=False))
+
+        if len(runnable_trials) > 0:
+            logger.info(
+                "Some trials changed of status and became runnable during the "
+                "sampling of new ones. The new ones are now discarded.")
+            return runnable_trials
+
         trials = []
         for hp_list in settings:
             setting = self.space.list_to_dict(hp_list)

@@ -15,7 +15,7 @@ class ValidatedSkoptOptimizer(SkoptOptimizer):
         super(ValidatedSkoptOptimizer, self).__init__(dimensions, **kwargs)
 
         self.validate_sample = validate_sample
-        self.space = ValidatedSkoptSpace(self.space.dimensions,
+        self.space = ValidatedSkoptSpace(dimensions,
                                          validate_sample)
 
     def ask(self, n_points=None, strategy="cl_min"):
@@ -163,9 +163,10 @@ class ValidatedSkoptSpace(SkoptSpace):
 
 
 class Optimizer(object):
-    def __init__(self, pool_size, space):
+    def __init__(self, pool_size, space, strategy="cl_min"):
         self.pool_size = pool_size
         self.space = space
+        self.strategy = strategy
 
     def _build_optimizer(self, **kwargs):
         print "Building optimizer"
@@ -197,7 +198,9 @@ class Optimizer(object):
                 logger.info("Training optimizer on %d points" % len(x))
                 optimizer = self._get_trained_optimizer(x, y, alpha=alpha)
                 logging.info("Sampling %d new points" % self.pool_size)
-                new_candidates = optimizer.ask(n_points=self.pool_size)
+                new_candidates = optimizer.ask(
+                    n_points=self.pool_size,
+                    strategy=self.strategy)
                 break
             except numpy.linalg.linalg.LinAlgError as e:
                 logging.warning("Optimizer failed on try %d: %s" %
@@ -211,9 +214,11 @@ class Optimizer(object):
         return new_candidates
 
     def get_new_candidates(self, x, y, maximum_tries=10):
-        if numpy.random.uniform() < 0.25:
+        if numpy.random.uniform() < 0.05:
+            logger.info("Sampling random candidates")
             new_candidates = self._get_random_candidate()
         else:
+            logger.info("Sampling candidates from Bayesian optimizer")
             new_candidates = self._get_bayesian_opt_candidate(
                 x, y, maximum_tries)
 

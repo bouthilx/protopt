@@ -16,10 +16,11 @@ logger = logging.getLogger()
 
 class Database(object):
 
-    def __init__(self, name, host_names, ports, user_name, password, ssl=False,
+    def __init__(self, name, collection, host_names, ports, user_name, password, ssl=False,
                  ssl_ca_file=None, replica_set=None, auth_source=None):
 
         self.name = name
+        self.collection = collection
         self.host_names = host_names
         self.ports = ports
         self.user_name = user_name
@@ -42,7 +43,8 @@ class Database(object):
                              overwrite=None)
 
     def _build_mongo_observer(self):
-        logger.debug("Opening database %s" % self.name)
+        logger.debug("Opening database %s with collection %s" %
+                     (self.name, self.collection))
         options = {}
         if self.ssl:
             options["ssl"] = "true"
@@ -67,7 +69,8 @@ class Database(object):
         # test_mongo_db(mongo_url, opt.name, table_name="runs",
         #               timeout=15, tries=60)
         mongodb_observer = MongoObserver.create(
-            url=mongo_url, db_name=self.name, **options)
+            url=mongo_url, db_name=self.name,
+            collection=self.collection, **options)
 
         return mongodb_observer
 

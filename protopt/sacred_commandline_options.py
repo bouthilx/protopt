@@ -79,11 +79,11 @@ class SelectOption(CommandLineOption):
                     ran_on_cluster)
             elif (ran_on_cluster is not None and
                     current_cluster_name == ran_on_cluster):
-                if not os.path.exists(run.config["save"]):
+                if not os.path.exists(run.config["path"]):
                     raise SacredSelectionError(
                         "File not available (%s). Maybe the experiment was "
                         "run on another cluster after all?" %
-                        run.config["save"])
+                        run.config["path"])
 
             run.config["resume"] = True
             row["config"]["resume"] = True

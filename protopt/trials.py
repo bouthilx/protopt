@@ -1,5 +1,4 @@
 import copy
-import functools
 import logging
 import os
 import sys
@@ -143,16 +142,13 @@ class Trial(object):
         self.experiment.database.mongo_observer.overwrite = None
 
         ex = Experiment(self.experiment.name)
-        ex.main(
-            functools.partial(
-                self.experiment.fct,
-                defaults=self.experiment.space.get_default()))
+        ex.main(self.experiment.fct)
         ex.add_config(self.experiment.default_setting)
         config_updates = copy.copy(self.setting)
 
         options = {
             "--queue": False,
-            "--unobserved": self.experiment.default_setting["debug"],
+            "--unobserved": False,
             "--enforce_clean": False}  # not DEBUG}
 
         options.update(run_options)
@@ -170,6 +166,10 @@ class Trial(object):
 
             config_updates["path"] = os.path.join(*(
                 [self.experiment.dir_path] +
+                sorted_profiles))
+
+            config_updates["tensorboard"] = os.path.join(*(
+                [self.experiment.dir_path, "logs"] +
                 sorted_profiles))
 
         ex.observers.append(self.experiment.database.mongo_observer)

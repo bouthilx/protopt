@@ -1,8 +1,12 @@
 import copy
+import logging
 import os
 import signal
 import subprocess
 from utils import TimeoutInterrupt
+
+
+logger = logging.getLogger(__name__)
 
 
 def sigterm_handler(signal, frame):
@@ -18,7 +22,6 @@ sigterm_handler.triggered = False
 
 
 def fake_fct_signature(defaults, _run, *args, **kwargs):
-
     assert len(args) == 0
     # args = dict_to_options(_run.config, impn.main.parse_args([]))
     # return impn.main.train(args, run=_run)
@@ -26,43 +29,59 @@ def fake_fct_signature(defaults, _run, *args, **kwargs):
     args = copy.copy(defaults)
     args.update(_run.config)
 
+    import pprint
+    pprint.pprint(args)
+
     # set gpu id in env var.
     gpu_id = args.pop("gpu_id")
-    os.environ["CUDA_VISIBLE_DEVICES"] = gpu_id
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     script = args.pop("script")
 
+    #
+    args.pop("seed")
+
     # Build command line based on arguments
-    arguments = " ".join("--%s %s" % (key, value)
-                         for (key, value) in args.iteritems())
+    arguments = ""
+    for (key, value) in args.iteritems():
+        if isinstance(value, bool) and value:
+            arguments += "--%s " % key
+        elif not isinstance(value, bool):
+            arguments += "--%s %s " % (key.replace("_", "-"), value)
+    arguments = arguments.strip()
 
     signal.signal(signal.SIGTERM, sigterm_handler)
 
     # Execute the command
     command = "%s %s" % (script, arguments)
+    logger.info("Running command:\n%s" % command)
     process = subprocess.Popen(command.split(), stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE)
 
-    info = []
+    info = ['n']
     output = 'non empty for starter'
     # Parse process' output
-    while output != '' or process.pool() is not None:
+    while output != '' or process.poll() is None:
 
         try:
-            output = process.stdout.readline()
+            logger.debug("Waiting for script's stdout")
+            output = process.stderr.readline().lstrip("INFO:root:").strip()
+            logger.info("stderr: %s" % output)
             if 'train_m' in output:
+                assert output.strip().split('\t')[0].lstrip('#') == 'n'
                 info += output.strip().split('\t')[1:]
-                info[0] = info[0].lstrip('#')
+                logger.info("info: %s" % str(info))
             if not output.startswith('#'):
-                output = output.strip().split('\t')
-                values = []
+                columns = output.strip().split('\t')
                 try:  # TODO weak
-                    values.append([float(x) for x in output])
+                    values = [float(x) for x in columns]
                 except ValueError:
+                    logger.info("continue")
                     continue
-                assert info[0] == 'n'
                 epoch = values[0]
                 for key, value in zip(info[1:], values[1:]):
+                    logger.info("Logging %s: (%s, %s)" %
+                                (key, str(epoch), str(value)))
                     _run.log_scalar(key, float(value), epoch)
             # process output
             # fetch line
@@ -72,7 +91,10 @@ def fake_fct_signature(defaults, _run, *args, **kwargs):
         except KeyboardInterrupt as e:
             raise e
 
-    rc = process.pool()
+    rc = process.poll()
+
+    if rc > 0:
+        raise RuntimeError(process.stderr.read())
 
     # Catch some errors?
 
