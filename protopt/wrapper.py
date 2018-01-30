@@ -47,7 +47,7 @@ def fake_fct_signature(defaults, _run, *args, **kwargs):
         if isinstance(value, bool) and value:
             arguments += "--%s " % key
         elif not isinstance(value, bool):
-            arguments += "--%s %s " % (key.replace("_", "-"), value)
+            arguments += "--%s %s " % (key, value)
     arguments = arguments.strip()
 
     signal.signal(signal.SIGTERM, sigterm_handler)
