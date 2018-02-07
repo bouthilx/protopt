@@ -46,7 +46,7 @@ def walltime_to_seconds(walltime):
 class Experiment(object):
 
     def __init__(self, name, dir_path, fct, validate_on, space, optimizer,
-                 database):
+                 database, default_result=10000.):
         self.name = name
         self.dir_path = dir_path
         self.fct = fct
@@ -55,6 +55,7 @@ class Experiment(object):
         self.optimizer = optimizer
         self.database = database
         self.excluded_trials = set()
+        self.default_result = default_result
 
     def _build_trial(self, row):
         config = row["config"]
@@ -71,33 +72,92 @@ class Experiment(object):
     def default_setting(self):
         return self.space.get_default()
 
-    def get_result(self, trial):
-        # result after n seconds
-        # trial.metrics["validation_accuracy.walltime"][3600]
-
-        # result after n epochs
-        # trial.metrics["validation_accuracy.epoch"][10]
-
+    def get_validation_metric(self):
         keys = self.validate_on.split(".")
         if len(keys) > 2:
             metric_name = ".".join(keys[:-2])
-            unit_name = keys[-2]
-            step = keys[-1]
         elif len(keys) == 2:
             metric_name = ".".join(keys[:-1])
-            unit_name = keys[-1]
-            step = None
         else:
             metric_name = self.validate_on
+
+        return metric_name
+
+    def get_validation_unit(self):
+        keys = self.validate_on.split(".")
+        if len(keys) > 2:
+            unit_name = keys[-2]
+        elif len(keys) == 2:
+            unit_name = keys[-1]
+        else:
             unit_name = "epoch"
+
+        return unit_name
+
+    def get_validation_step(self):
+        keys = self.validate_on.split(".")
+        if len(keys) > 2:
+            step = keys[-1]
+            if ":" in step:
+                step = walltime_to_seconds(step)
+        else:
             step = None
 
-        metrics = trial.metrics
+        return step
+
+    def get_curve(self, trial=None, metrics=None, metric_name=None,
+                  unit_name=None):
+        if metric_name is None:
+            metric_name = self.get_validation_metric()
+        if unit_name is None:
+            unit_name = self.get_validation_unit()
+
+        if metrics is None:
+            metrics = trial.metrics
 
         # InvalidConfiguration
-        if len(metrics) == 0 and trial.is_completed():
-            assert trial.row.get("result", 0.) == 0.
-            result = 0.
+        if len(metrics) == 0:  # and trial.is_completed():
+            # assert trial.row.get("result", 0.) == 0.
+            steps = []
+            result = []
+        # Valid configuration
+        else:
+            try:
+                unit_metrics = metrics[metric_name]
+            except KeyError as e:
+                raise type(e)(str(e) + (". Can be one of: %s" %
+                                        str(sorted(metrics.keys()))))
+            try:
+                result = unit_metrics[unit_name]
+            except KeyError as e:
+                raise type(e)(str(e) + (". Can be one of: %s" %
+                                        str(sorted(unit_metrics.keys()))))
+
+        # WAIT Those are not list, they are dictionnaries!
+        if isinstance(result, dict):
+            steps = sorted(result.keys())
+            result = [result[step] for step in steps]
+
+        return steps, result
+
+    def get_result(self, trial=None, metrics=None, metric_name=None,
+                   unit_name=None, step=None):
+
+        if metric_name is None:
+            metric_name = self.get_validation_metric()
+        if unit_name is None:
+            unit_name = self.get_validation_unit()
+        if step is None:
+            step = self.get_validation_step()
+
+        if metrics is None:
+            metrics = trial.metrics
+
+        # InvalidConfiguration
+        if len(metrics) == 0:  # and trial.is_completed():
+            # assert trial.row.get("result", 0.) == 0.
+            step_value = 0.
+            result = self.default_result
         # Valid configuration
         else:
             try:
