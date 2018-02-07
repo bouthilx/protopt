@@ -9,6 +9,9 @@ from skopt.space import Real
 from skopt.utils import check_x_in_space
 
 
+COEFFICIENT_LIMIT = 1e-10
+
+
 class Integer(Real):
     def __repr__(self):
         return super(Integer, self).__repr__().replace("Real", "Integer")
