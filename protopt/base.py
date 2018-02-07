@@ -147,8 +147,11 @@ def build_database(opt):
                     opt.ssl, opt.ssl_ca_file, opt.replica_set, opt.auth_source)
 
 
-def build_experiment(name, fct, validate_on, space, database, pool_size):
-    optimizer = Optimizer(pool_size, space)
+def build_optimizer(pool_size, space):
+    return Optimizer(pool_size, space)
+
+
+def build_experiment(name, fct, validate_on, space, database, optimizer):
 
     dir_path = os.path.join(os.getcwd(), name)
 
@@ -160,10 +163,7 @@ def build_experiment(name, fct, validate_on, space, database, pool_size):
     return experiment
 
 
-def main_loop(name, fct, validate_on, space, database, pool_size):
-
-    experiment = build_experiment(name, fct, validate_on, space, database,
-                                  pool_size)
+def main_loop(experiment):
 
     resilience = 10
 
