@@ -88,7 +88,13 @@ class Space(object):
     def dict_to_list(self, setting):
         setting = setting.copy()
 
-        space = [setting[hp_name] for hp_name in self.get_spaces().iterkeys()]
+        default = self.get_default()
+        space = []
+        for hp_name in self.get_spaces().iterkeys():
+            if hp_name in setting:
+                space.append(setting[hp_name])
+            else:
+                space.append(default[hp_name])
         return space
 
     def get_default(self):
