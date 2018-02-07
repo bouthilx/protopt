@@ -133,7 +133,7 @@ def parse_args(project, models, argv):
         logger.setLevel(level=logging.DEBUG)
 
     if opt.experiment_name is None:
-        opt.experiment_name = "cesar_%s" % opt.model.replace("-", "_")
+        opt.experiment_name = "%s_%s" % (project, opt.model.replace("-", "_"))
 
     if len(opt.ports) == 1:
         opt.ports = opt.ports * len(opt.host_names)
