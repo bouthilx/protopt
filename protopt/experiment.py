@@ -1,9 +1,8 @@
 import itertools
 import logging
+import re
 
 import numpy
-
-import pymongo
 
 import smartdispatch.utils
 
@@ -21,6 +20,27 @@ CLUSTER_NAME = smartdispatch.utils.detect_cluster()
 @host_info_getter
 def cluster():
     return CLUSTER_NAME
+
+
+TIME_REGEX = re.compile(
+    "^(?:(?:(?:(\d*):)?(\d*):)?(\d*):)?(\d*)$")
+
+
+def walltime_to_seconds(walltime):
+    if not TIME_REGEX.match(walltime):
+        raise ValueError(
+            "Invalid walltime format: %s\n"
+            "It must be either DD:HH:MM:SS, HH:MM:SS, MM:SS or S" %
+            walltime)
+
+    split = walltime.split(":")
+
+    while len(split) < 4:
+        split = [0] + split
+
+    days, hours, minutes, seconds = map(int, split)
+
+    return (((((days * 24) + hours) * 60) + minutes) * 60) + seconds
 
 
 class Experiment(object):
@@ -101,12 +121,14 @@ class Experiment(object):
                 result = result[step]
             else:
                 sorted_keys = sorted(result.keys())
+                step_value = sorted_keys[0]
+                next_step = sorted_keys[0]
                 for step_value, next_step in zip(sorted_keys, sorted_keys[1:]):
-                    if next_step > step:
+                    if next_step > type(next_step)(step):
                         break
 
                 # If best step found
-                if next_step > step:
+                if next_step > type(next_step)(step):
                     result = result[step_value]
                 # Otherwise use last step
                 else:
@@ -122,8 +144,8 @@ class Experiment(object):
                 "Result considered for the trial must be a float number: "
                 "%s (%s)" % (str(result), str(type(result))))
 
-        # return step_value, result
-        return result
+        return step_value, result
+        # return result
 
     def get_trials(self, query=None, projection=None, evaluations=False,
                    iterator=None):
