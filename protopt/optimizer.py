@@ -1,4 +1,5 @@
 import logging
+from random import shuffle
 
 import numpy
 
@@ -160,6 +161,25 @@ class ValidatedSkoptSpace(SkoptSpace):
                     'Dimensions and validate_sample are incompatible.')
 
         return rows[:n_samples], trashed
+
+
+class GridSearch(object):
+    def __init__(self, pool_size, grid):
+        self.pool_size = pool_size
+        self.grid = shuffle([tuple(e) for e in grid])
+        self.strategy = None
+
+    def get_new_candidates(self, x, y):
+        already_queued = set(tuple(e) for e in x)
+        candidates = []
+        for candidate in self.grid:
+            if candidate not in already_queued:
+                candidates.append(candidate)
+
+            if len(candidates) >= self.pool_size:
+                break
+
+        return candidates
 
 
 class Optimizer(object):
