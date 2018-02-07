@@ -142,9 +142,9 @@ def parse_args(project, models, argv):
 
 
 def build_database(opt):
-    return Database(opt.database_name, opt.host_names, opt.ports,
-                    opt.user_name, opt.password, opt.ssl, opt.ssl_ca_file,
-                    opt.replica_set, opt.auth_source)
+    return Database(opt.database_name, opt.experiment_name + "_runs",
+                    opt.host_names, opt.ports, opt.user_name, opt.password,
+                    opt.ssl, opt.ssl_ca_file, opt.replica_set, opt.auth_source)
 
 
 def build_experiment(name, fct, validate_on, space, database, pool_size):
