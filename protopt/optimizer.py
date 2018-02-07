@@ -166,7 +166,8 @@ class ValidatedSkoptSpace(SkoptSpace):
 class GridSearch(object):
     def __init__(self, pool_size, grid):
         self.pool_size = pool_size
-        self.grid = shuffle([tuple(e) for e in grid])
+        self.grid = [tuple(e) for e in grid]
+        shuffle(self.grid)
         self.strategy = None
 
     def get_new_candidates(self, x, y):
