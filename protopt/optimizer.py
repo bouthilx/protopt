@@ -183,6 +183,25 @@ class GridSearch(object):
         return candidates
 
 
+class GridSearchThenOptimizer(object):
+    def __init__(self, grid_search, optimizer):
+        self.grid_search = grid_search
+        self.optimizer = optimizer
+        self.strategy = optimizer.strategy
+
+    @property
+    def pool_size(self):
+        return self.grid_search.pool_size
+
+    def get_new_candidates(self, x, y):
+        candidates = self.grid_search.get_new_candidates(x, y)
+
+        if len(candidates) < self.pool_size:
+            candidates = self.optimizer.get_new_candidates(x, y)
+
+        return candidates[:self.pool_size]
+
+
 class Optimizer(object):
     def __init__(self, pool_size, space, strategy="cl_min"):
         self.pool_size = pool_size
