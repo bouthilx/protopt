@@ -39,6 +39,7 @@ def fake_fct_signature(defaults, _run, *args, **kwargs):
     script = args.pop("script")
 
     #
+    args.pop("validate")
     args.pop("seed")
 
     # Build command line based on arguments
