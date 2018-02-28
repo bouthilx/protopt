@@ -1,6 +1,7 @@
 import itertools
 import logging
 import re
+from random import shuffle
 
 import numpy
 
@@ -293,9 +294,11 @@ class Experiment(object):
         for trial in self.get_trials({}):
             x.append(self.space.dict_to_list(trial.setting))
 
-            if trial.status == "COMPLETED":
+            try:
                 y.append(trial.result[1])
-            else:
+            except:
+                # We should be able to get the result if status is COMPLETED
+                assert trial.status != "COMPLETED"
                 if strategy == "cl_min":
                     y_lie = numpy.min(y) if y else 0.0
                 elif strategy == "cl_mean":
@@ -309,6 +312,8 @@ class Experiment(object):
         return self.register_settings(x)
 
     def register_settings(self, settings):
+
+        shuffle(settings)
 
         # TODO might be better to do a direct count rather than iterating over
         # trials through the interface
@@ -324,10 +329,20 @@ class Experiment(object):
             return runnable_trials
 
         trials = []
-        for hp_list in settings:
+        for i, hp_list in enumerate(settings):
             setting = self.space.list_to_dict(hp_list)
             trial = self._build_trial({'config': setting})
             trial.queue()
             trials.append(trial)
+
+            # Should now contain i + 1 runnable trials
+            # Otherwise it means another process is currently registering
+            # or some trials changed of status from RUNNING to INTERRUPTED
+            runnable_trials = list(self.get_runnable_trials(force_new=False))
+            if len(runnable_trials) > (i + 1):
+                logger.info(
+                    "Some trials changed of status and became runnable during the "
+                    "registering of new ones. Stop registering new trials.")
+                return runnable_trials + trials
 
         return trials
