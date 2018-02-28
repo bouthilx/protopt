@@ -164,13 +164,14 @@ class Trial(object):
                                in self.experiment.space.iter_profiles()
                                if name is not None]
 
-            config_updates["path"] = os.path.join(*(
+            config_updates["save_path"] = os.path.join(*(
                 [self.experiment.dir_path] +
                 sorted_profiles))
 
-            config_updates["tensorboard"] = os.path.join(*(
-                [self.experiment.dir_path, "logs"] +
-                sorted_profiles))
+            if "tensorboard" in self.experiment.default_setting:
+                config_updates["tensorboard"] = os.path.join(*(
+                    [self.experiment.dir_path, "logs"] +
+                    sorted_profiles))
 
         ex.observers.append(self.experiment.database.mongo_observer)
 
@@ -184,7 +185,8 @@ class Trial(object):
         # Clean
         self.setting["data_path"] = (
             self.experiment.default_setting["data_path"])
-        self.setting["path"] = self.experiment.default_setting["path"]
+        self.setting["save_path"] = (
+            self.experiment.default_setting["save_path"])
 
         self._run({"--queue": True})
         self.row = self.experiment.database.mongo_observer.run_entry
