@@ -69,7 +69,7 @@ class SelectOption(CommandLineOption):
                 "\"%s\"" % str(row["status"]))
 
         # Make sure the job is resumed on the same cluster it ran on
-        if "host" in row:
+        if "host" in row and row["status"] in ["INTERRUPTED", "TIMED_OUT"]:
             current_cluster_name = smartdispatch.utils.detect_cluster()
             ran_on_cluster = row["host"].get("cluster", None)
             if (ran_on_cluster is not None and
