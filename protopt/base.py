@@ -163,9 +163,7 @@ def build_experiment(name, fct, validate_on, space, database, optimizer):
     return experiment
 
 
-def main_loop(experiment):
-
-    resilience = 10
+def main_loop(experiment, resilience=10):
 
     while resilience > 0:
 
@@ -208,6 +206,8 @@ def main_loop(experiment):
             return
         except BaseException as e:
             logger.error(str(e))
+            if resilience <= 1:
+                raise
             resilience -= 1
             logger.info("Resilience now at %d" % resilience)
 
