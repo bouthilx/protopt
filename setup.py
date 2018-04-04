@@ -17,7 +17,7 @@ setup(
     license='MIT',
     packages=['protopt'],
     install_requires=['pymongo', 'sacred',  # (my branch)
-                      'gitpython'],
+                      'gitpython', 'scikit-optimize'],
     scripts=['bin/opt-launch',
              'bin/opt-run'],
     #         'bin/opt-stats']
