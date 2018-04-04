@@ -1,6 +1,6 @@
 [submodule "sacred"]
 	path = sacred
-	url = git@github.com:bouthilx/sacred.git
+    url = https://github.com/bouthilx/sacred.git
 [submodule "smartdispatch"]
 	path = smartdispatch
-	url = git@github.com:bouthilx/smartdispatch.git
+	url = https://github.com/bouthilx/smartdispatch.git
