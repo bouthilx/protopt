@@ -1,0 +1,518 @@
+#!/usr/bin/env python
+from collections import defaultdict
+import argparse
+import copy
+import datetime
+import getpass
+import logging
+import os
+import pprint
+
+from tqdm import tqdm
+
+import numpy
+
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+import matplotlib.gridspec as gridspec
+
+from protopt.base import build_database
+from protopt.experiment import Experiment
+from protopt.optimizer import Optimizer
+from protopt.utils import try_import
+
+
+logger = logging.getLogger()
+
+
+PIPELINE = [
+    {"$group": {
+        "_id": {
+            "name": "$experiment.name",
+            "status": "$status"
+        },
+        "total": {"$sum": 1},
+        "best": {"$max": "$result"}
+    }},
+    {"$group": {
+         "_id": "$_id.name",
+         "stats": {
+             "$push": {
+                 "status": "$_id.status",
+                 "total": "$total",
+                 "best": "$best"
+             }
+         }
+    }}]
+
+
+def get_stats(database, opt):
+    cursor = database.runs.aggregate(PIPELINE)
+
+    stats = {}
+
+    for row in cursor:
+        row_stats = {}
+        for stat in row["stats"]:
+            row_stats[stat["status"]] = dict(
+                total=stat["total"],
+                best=stat["best"])
+        stats[row["_id"]] = row_stats
+
+    return stats
+
+
+def print_stats(stats, opt):
+
+    msg = "Stats on %s" % datetime.datetime.now()
+    print "-" * (len(msg) + 4)
+    print "  %s" % msg
+    print "-" * (len(msg) + 4)
+    print "\n"
+
+    COLUMNS = (
+        "Model Running Completed Interrupted "
+        "Failed Queued Others Best".split())
+
+    PADDING = ["%20s"] + ["%12s"] * (len(COLUMNS) - 1)
+    CROSS_PADDING = ["%16s"] + ["%8s"] * (len(COLUMNS) - 1)
+
+    CROSS_SEPARATOR = "- -+- -"
+    LINE_SEPARATOR = " | "
+
+    def print_line():
+        print_row(("" for c in COLUMNS), CROSS_SEPARATOR, CROSS_PADDING,
+                  prefix="  ")
+
+    def print_row(values, separator, padding, prefix=""):
+        string = separator.join(padding[i] % v for i, v in enumerate(values))
+        print prefix + string
+
+    print_line()
+    print_row(COLUMNS, LINE_SEPARATOR, PADDING)
+    print_line()
+
+    # print " ", "- -+- -".join(CROSS_PADDING[i] % ""
+    #                           for i, c in enumerate(COLUMNS))
+    # print " | ".join(PADDING % c for c in COLUMNS)
+    # print " ", "- -+- -".join(CROSS_PADDING % "" for c in COLUMNS)
+
+    for model in sorted(stats.keys()):
+        row = [0] * len(COLUMNS)
+        row[0] = model
+
+        for status, results in stats[model].iteritems():
+            try:
+                idx = COLUMNS.index(status.capitalize())
+            except ValueError:
+                idx = -2
+            row[idx] += results['total']
+            row[-1] = max(row[-1], results['best'])
+
+        print_row(row, LINE_SEPARATOR, PADDING)
+        print_line()
+
+    print
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Stats on exploration for paper \"Implicitly Natural\"")
+
+    parser.add_argument(
+        "project")
+
+    parser.add_argument(
+        "module")
+
+    parser.add_argument(
+        "model",
+        help=("Which kind of model architecture is optimized."))
+
+    parser.add_argument("--experiment-name", metavar="experiment-name",
+                        help=("Experiment name. Default is "
+                              "{project}_{module}_{model}"))
+
+    parser.add_argument(
+        "--base-profiles", nargs="*", default=[],
+        help=("Select common profiles for comparison."))
+
+    parser.add_argument(
+        "--compare", nargs="*", default=[],
+        help=("Select profiles to compare."))
+
+    parser.add_argument(
+        "--validate-on",
+        default="validation_accuracy",
+        help=("Which metric to use to evaluate trials. Default is "
+              "'validation_accuracy.epoch' which means validation accuracy"
+              "of the last epoch."))
+
+    parser.add_argument(
+        "--metrics", nargs="*", default=[],
+        help=("Which metric to compare. Best runs are selected on "
+              "--validate-on."))
+
+    parser.add_argument("--database-name", metavar="db-name",
+                        help=("Database name. "
+                              "Default is {project}_{model}_{exp}"))
+
+    parser.add_argument(
+        "--host-names", default=["localhost"], nargs="*",
+        help="Host where the mongoDB database is to store configurations and "
+             "results")
+
+    parser.add_argument(
+        "--ports", default=[27017], nargs="*", type=int,
+        help="Host for the mongodb database")
+
+    parser.add_argument(
+        "--ssl", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--ssl-ca-file",
+        help="")
+
+    parser.add_argument(
+        "--replica-set",
+        help="")
+
+    parser.add_argument(
+        "--auth-source",
+        help="")
+
+    parser.add_argument(
+        "--user-name", default=getpass.getuser(),
+        help="User name for the mongoDB database.")
+
+    parser.add_argument(
+        "--password", default="",
+        help="Password for the mongoDB database.")
+
+    parser.add_argument('--sleep-interval', type=int, default=60)
+
+    parser.add_argument(
+        '-v', '--verbose', action='count', default=0,
+        help="Print informations about the process.\n"
+             "     -v: INFO\n"
+             "     -vv: DEBUG")
+
+    return parser
+
+
+def parse_args(argv):
+    opt = build_parser().parse_args(argv)
+
+    if opt.verbose == 0:
+        logging.basicConfig(level=logging.WARNING)
+        logger.setLevel(level=logging.WARNING)
+    elif opt.verbose == 1:
+        logging.basicConfig(level=logging.INFO)
+        logger.setLevel(level=logging.INFO)
+    elif opt.verbose == 2:
+        logging.basicConfig(level=logging.DEBUG)
+        logger.setLevel(level=logging.DEBUG)
+
+    if opt.experiment_name is None:
+        opt.experiment_name = "%s_%s_%s" % (opt.project, opt.module,
+                                            opt.model.replace("-", "_"))
+
+    return opt
+
+
+def fake_train_signature(_run, *args, **kwargs):
+    return None
+
+
+def build_experiment(name, validate_on, space, database, pool_size):
+    optimizer = Optimizer(pool_size, space)
+
+    dir_path = os.path.join(os.getcwd(), name)
+
+    experiment = Experiment(
+        name=name, dir_path=dir_path, fct=fake_train_signature,
+        validate_on=validate_on, space=space,
+        optimizer=optimizer,
+        default_result=10000.,
+        database=database)
+
+    return experiment
+
+
+def db_iterator(rows):
+    return tqdm(rows, total=rows.count())
+
+
+def main(argv=None):
+    opt = parse_args(argv)
+
+    # TODO refactor to avoid this
+    opt.verbose_process = 2
+    opt.debug = False
+    opt.gpu_id = 0
+
+    opt.experiment_name = "%s_%s" % (opt.module, opt.model.replace("-", "_"))
+
+    model_module = try_import("%s.explorations.%s" %
+                              (opt.project, opt.module))
+
+    database = build_database(opt)
+
+    profiles = {}
+
+    for profile in opt.compare:
+        profile_opt = copy.deepcopy(opt)
+        profile_opt.profiles = profile_opt.base_profiles
+        profile_opt.profiles.append(profile)
+        profile_space = model_module.Space(opt.model, model_module.DEFAULTS,
+                                           profile_opt)
+        experiment = build_experiment(
+            profile_opt.experiment_name, profile_opt.validate_on,
+            profile_space, database, pool_size=1)
+
+        profiles[profile] = experiment
+
+        # NOTE: Should we remove that?
+        for name, dimension in profile_space.SPACES.iteritems():
+            if (hasattr(dimension, "prior") and
+                    dimension.prior == "log_uniform"):
+                dimension.low = 1e-20
+            elif hasattr(dimension, "low"):
+                dimension.low = -1e20
+
+            if hasattr(dimension, "high"):
+                dimension.high = 1e20
+
+    profile_trials = {}
+
+    for name, experiment in profiles.iteritems():
+        trials = experiment.get_trials({}, iterator=db_iterator)
+
+        # trials = experiment.get_completed_trials(iterator=db_iterator)
+        ids = []
+        metrics = []
+        settings = []
+
+        logger.info("Fetching metrics from db")
+        for trial in trials:
+            ids.append(trial.id)
+            metrics.append(trial.metrics)
+            settings.append(trial.setting)
+
+        profile_trials[name] = dict(
+            ids=ids, metrics=metrics, settings=settings,
+            experiment=experiment)
+
+    plot(profile_trials, opt.metrics, step=None)
+
+
+def plot(profile_trials, metrics_to_report, step=None):
+
+    best_experiments = (
+        compile_metrics(profile_trials, metrics_to_report, step))
+
+    axes = create_figure(metrics_to_report)
+
+    draw(axes, best_experiments, metrics_to_report, step)
+
+    def update(val):
+        best_experiments = (
+            compile_metrics(profile_trials, metrics_to_report, step=val))
+
+        # step=n_epochs?
+        draw(axes, best_experiments, metrics_to_report, step=val)
+
+    curves = []
+    for metric_name, corresponding_metrics in best_experiments.iteritems():
+        for experiment_name, stats in corresponding_metrics.iteritems():
+            curves.append(stats['curves'])
+
+    if len(curves) > 0:
+        max_step = max(curve[0][-1] for curve in curves if len(curve[0]))
+    else:
+        max_step = 0
+    # max_step = 200
+    # import pdb
+    # pdb.set_trace()
+    random_experiment = next(
+        next(best_experiments.itervalues()).itervalues())['experiment']
+    sfreq = Slider(axes[-1][-1], random_experiment.get_validation_unit(), 0,
+                   max_step, valinit=max_step)
+    sfreq.on_changed(update)
+
+    plt.show()
+
+
+def compile_metrics(profile_trials, metrics_to_report, step):
+
+    validate_on = next(profile_trials.itervalues())['experiment'].validate_on
+
+    corresponding_metrics = dict()
+
+    logger.info("Compiling metrics")
+    for name, trials in profile_trials.iteritems():
+        ids = trials['ids']
+        metrics = trials['metrics']
+        experiment = trials['experiment']
+
+        best_id = None
+        best_validate = 100.0
+
+        for i, trial_metrics in enumerate(tqdm(metrics, total=len(metrics))):
+            # print "Fetching %d-th trial with id: %d" % (i, trial.id)
+
+            epoch, result = experiment.get_result(metrics=trial_metrics,
+                                                  step=step)
+            steps, results = experiment.get_curve(metrics=trial_metrics)
+
+            print epoch, result
+
+            if result < best_validate:
+                best_id = ids[i]
+                best_validate = result
+                best_curves = (steps, results)
+
+        corresponding_metrics[name] = dict(
+            id=best_id,
+            experiment=experiment,
+            best_validate=best_validate,
+            curves=best_curves
+        )
+
+    best_experiments = {
+        experiment.validate_on: corresponding_metrics}
+
+    for metric in metrics_to_report:
+
+        corresponding_metrics = dict()
+
+        for name, trials in profile_trials.iteritems():
+            if metric in best_experiments and name in best_experiments:
+                continue
+
+            trial_ids = trials['ids']
+            trial_metrics = trials['metrics']
+            experiment = trials['experiment']
+
+            trial_index = best_experiments[experiment.validate_on][name]['id']
+            index = trial_ids.index(trial_index)
+
+            experiment.validate_on = metric
+            steps, results = experiment.get_curve(metrics=trial_metrics[index])
+            experiment.validate_on = validate_on
+
+            corresponding_metrics[name] = dict(
+                id=trial_index,
+                experiment=experiment,
+                curves=(steps, results))
+
+        best_experiments[metric] = corresponding_metrics
+
+    return best_experiments
+
+
+def onpick(event):
+    keep = ['batch_size',
+            'lr',
+            'momentum',
+            'preconditioning',
+            'sketch_amortize',
+            'sketch_buffer',
+            'sketch_group_gradients',
+            'sketch_group_params',
+            'sketch_min_buffer',
+            'sketch_min_rank',
+            'sketch_padding',
+            'sketch_rank',
+            'sketch_without_transform']
+
+    trial = next(event.artist.experiment.get_trials(
+        query={'_id': event.artist.id},
+        projection={'config': 1}))
+
+    setting = trial.setting
+    pprint.pprint({v: setting[v] for v in keep})
+
+
+def create_figure(metrics_to_report):
+    # fig, axes = plt.subplots(n_hp_params, n_hp_params)
+    fig = plt.figure()  # figsize=(14, 15))
+    fig.canvas.mpl_connect('pick_event', onpick)
+    size = (len(metrics_to_report), 2)
+    gs = gridspec.GridSpec(
+        *size)  # height_ratios=([10] * (size[0] + 1)) + [1])
+    axes = []
+    for i in xrange(len(metrics_to_report)):
+        axes.append([plt.subplot(gs[0, i])])
+
+    axes.append([plt.subplot(gs[-1, :])])
+
+    # ax1 = plt.subplot2grid((3, 3), (0, 0), colspan=3)
+    # ax2 = plt.subplot2grid((3, 3), (1, 0), colspan=2)
+    # ax3 = plt.subplot2grid((3, 3), (1, 2), rowspan=2)
+    # ax4 = plt.subplot2grid((3, 3), (2, 0))
+    # ax5 = plt.subplot2grid((3, 3), (2, 1))
+
+    return axes
+
+
+def draw(axes, profile_trials, metrics_to_report, step=None):
+
+    for axis, metric_name in zip(axes[0], metrics_to_report):
+        axis.cla()
+        for name, trials in profile_trials[metric_name].iteritems():
+            # Choice of experiment/metric already done based on
+            # experiment.validate_on
+            print trials.keys()
+            plot_curve(axis, name, step=step, **trials)
+
+
+def plot_curve(axis, name, id, experiment, curves, step):
+
+    artist, = axis.plot(curves[0], curves[1], label=name, picker=2)
+    setattr(artist, 'id', id)
+    setattr(artist, 'experiment', experiment)
+
+    axis.axvline(x=step, color="red")
+
+    axis.legend()
+
+
+def plot_hp_bar(ax, k, values, metrics, dimension):
+
+    stats = defaultdict(list)
+    for value, metric in zip(values, metrics):
+        stats[value].append(metric)
+
+    x = []
+    y = []
+    best = []
+    stds = []
+    for value, metrics in stats.iteritems():
+        x.append(value)
+        y.append(numpy.mean(metrics))
+        best.append(numpy.min(metrics))
+        stds.append(numpy.std(metrics))
+
+    # ax.bar(numpy.arange(len(x)), y, width=0.45, yerr=stds)
+    ax.boxplot([stats[category] for category in dimension.categories])
+
+    if "both" in dimension.categories:
+        import pdb
+        pdb.set_trace()
+
+    ax.set_xticks(numpy.arange(len(x)) + 1)
+    ax.set_xticklabels(dimension.categories)
+
+    # ax.bar(numpy.arange(len(x)) + 0.45, best, width=0.45)
+
+    # ax.set_ylim([min(best) * 0.90, max(y + best) * 1.05])
+
+
+def plot_hp_correlation():
+    pass
+
+
+if __name__ == "__main__":
+    main()
