@@ -19,7 +19,8 @@ setup(
     install_requires=['pymongo', 'sacred',  # (my branch)
                       'gitpython', 'scikit-optimize'],
     scripts=['bin/opt-launch',
-             'bin/opt-run'],
+             'bin/opt-run',
+             'bin/opt-compile'],
     #         'bin/opt-stats']
     # Optional: pymongo, sacred (my branch), gitpython
 )
