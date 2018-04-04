@@ -217,8 +217,12 @@ class Experiment(object):
         query["experiment.name"] = {"$eq": self.name}
 
         # When not evaluating the test set, validate must always be True
-        if not evaluations:
-            query["config.validate"] = {"$eq": True}
+        # NOTE: This break code if we want to optimize training error without computing the
+        # validation error
+        # TODO: Determine if that would still be needed
+
+        # if not evaluations:
+        #     query["config.validate"] = {"$eq": True}
 
         query.update(self.get_query_for_profile())
 

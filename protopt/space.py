@@ -80,7 +80,6 @@ class Space(object):
         # setting["verbose"] = self.opt.verbose_process
         # setting["print_progress"] = self.opt.debug
         setting["gpu_id"] = self.opt.gpu_id
-        setting["validate"] = True
 
     def list_to_dict(self, space):
         setting = dict(list(zip(list(self.get_spaces().keys()), space)))
