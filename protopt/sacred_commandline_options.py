@@ -9,7 +9,7 @@ from sacred.utils import join_paths
 
 import smartdispatch.utils
 
-from utils import SacredSelectionError
+from protopt.utils import SacredSelectionError
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,7 @@ class SelectOption(CommandLineOption):
                     {"$in": STOPPED_STATES}})
 
             if args == "first":
-                print rows.count()
+                print(rows.count())
                 return rows[0]["_id"]
             elif args == "last":
                 return rows[rows.count() - 1]["_id"]
@@ -52,8 +52,7 @@ class SelectOption(CommandLineOption):
 
     @classmethod
     def apply(cls, args, run):
-        mongodb_observers = filter(lambda o: isinstance(o, MongoObserver),
-                                   run.observers)
+        mongodb_observers = [o for o in run.observers if isinstance(o, MongoObserver)]
         assert len(mongodb_observers) == 1
 
         mongodb_observer = mongodb_observers[0]
@@ -136,8 +135,7 @@ class EnforceNewOption(CommandLineOption):
     def apply(cls, args, run):
         RTOL = 0.01
 
-        mongodb_observers = filter(lambda o: isinstance(o, MongoObserver),
-                                   run.observers)
+        mongodb_observers = [o for o in run.observers if isinstance(o, MongoObserver)]
         assert len(mongodb_observers) == 1
 
         mongodb_observer = mongodb_observers[0]
@@ -204,7 +202,7 @@ def create_comparison_query(config, rtol=0.01):
     ignore = ["seed", "dataroot", "nthread", "resume", "save", "tensorboard",
               "verbose"]
     query = {}
-    for hp_name, hp_value in config.iteritems():
+    for hp_name, hp_value in config.items():
         if hp_name in ignore:
             continue
 

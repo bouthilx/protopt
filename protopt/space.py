@@ -44,10 +44,10 @@ class Space(object):
 
         valid = True
         for name, profile in self.iter_profiles():
-            for key, value in profile.iteritems():
+            for key, value in profile.items():
                 valid = valid and setting.get(key) == value
 
-        skopt_space = SkoptSpace(self.get_spaces().values())
+        skopt_space = SkoptSpace(list(self.get_spaces().values()))
         try:
             check_x_in_space(self.dict_to_list(setting), skopt_space)
         except ValueError as e:
@@ -59,10 +59,10 @@ class Space(object):
         model_spaces = OrderedDict()
 
         profiles_hps = sum(
-            (profile.keys() for _, profile in self.iter_profiles()),
+            (list(profile.keys()) for _, profile in self.iter_profiles()),
             [])
 
-        for hp_name, dimension in self.SPACES.iteritems():
+        for hp_name, dimension in self.SPACES.items():
             if ((hp_name in self.BASE_SPACE or
                  hp_name in self.MODELS[self.model]) and
                     hp_name not in profiles_hps):
@@ -73,7 +73,7 @@ class Space(object):
 
     def force_profiles(self, setting):
         for name, profile in self.iter_profiles():
-            for key, value in profile.iteritems():
+            for key, value in profile.items():
                 setting[key] = value
 
     def force_options(self, setting):
@@ -83,7 +83,7 @@ class Space(object):
         setting["validate"] = True
 
     def list_to_dict(self, space):
-        setting = dict(zip(self.get_spaces().keys(), space))
+        setting = dict(list(zip(list(self.get_spaces().keys()), space)))
         self.force_options(setting)
         self.force_profiles(setting)
 
@@ -94,7 +94,7 @@ class Space(object):
 
         default = self.get_default()
         space = []
-        for hp_name in self.get_spaces().iterkeys():
+        for hp_name in self.get_spaces().keys():
             if hp_name in setting:
                 space.append(setting[hp_name])
             else:
@@ -115,7 +115,7 @@ class Space(object):
     def _validate_sample(space, row):
         setting = space.list_to_dict(row)
 
-        skopt_space = SkoptSpace(space.get_spaces().values())
+        skopt_space = SkoptSpace(list(space.get_spaces().values()))
         try:
             check_x_in_space(row, skopt_space)
         except ValueError:

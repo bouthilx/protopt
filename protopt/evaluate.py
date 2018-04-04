@@ -3,11 +3,10 @@ import getpass
 import logging
 import sys
 
-from base import build_database, build_experiment
-from space import Space
-
-from sacred_commandline_options import (
+from protopt.base import build_database, build_experiment
+from protopt.sacred_commandline_options import (
     SelectOption, EnforceNewOption)
+from protopt.space import Space
 
 
 # To shut up pep8. We know they aren't used but we need to import them so that

@@ -9,8 +9,8 @@ import smartdispatch.utils
 
 from sacred import host_info_getter
 
-import status
-from trials import Trial
+import protopt.status
+from protopt.trials import Trial
 
 
 logger = logging.getLogger()
@@ -39,7 +39,7 @@ def walltime_to_seconds(walltime):
     while len(split) < 4:
         split = [0] + split
 
-    days, hours, minutes, seconds = map(int, split)
+    days, hours, minutes, seconds = list(map(int, split))
 
     return (((((days * 24) + hours) * 60) + minutes) * 60) + seconds
 
@@ -237,7 +237,7 @@ class Experiment(object):
     def get_query_for_profile(self):
         query_for_profile = dict()
         for profile_name, profile in self.space.iter_profiles():
-            for hp_name, hp_value in profile.iteritems():
+            for hp_name, hp_value in profile.items():
                 query_for_profile["config.%s" % hp_name] = {"$eq": hp_value}
 
         return query_for_profile
@@ -246,7 +246,7 @@ class Experiment(object):
         # Either the trial is queued or was interrupted on the same cluster
         trials = self.get_trials({
             "status": {
-                "$in": status.RUNNABLE
+                "$in": protopt.status.RUNNABLE
             }}, {
             "config": 1, "status": 1})
 
@@ -282,7 +282,7 @@ class Experiment(object):
         self.excluded_trials.add(trial.id)
 
     def get_completed_trials(self, **kwargs):
-        return self.get_trials({"status": {"$in": status.COMPLETED}}, **kwargs)
+        return self.get_trials({"status": {"$in": protopt.status.COMPLETED}}, **kwargs)
 
     def create_new_trials(self):
         logger.info("Creating new trials")

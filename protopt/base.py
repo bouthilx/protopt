@@ -5,11 +5,11 @@ import os
 import random
 import sys
 
-from database import Database
-from experiment import Experiment
-from optimizer import Optimizer
-from utils import SacredSelectionError, Interrupt, ClusterProblem
-from sacred_commandline_options import SelectOption, EnforceNewOption
+from protopt.database import Database
+from protopt.experiment import Experiment
+from protopt.optimizer import Optimizer
+from protopt.utils import SacredSelectionError, Interrupt, ClusterProblem
+from protopt.sacred_commandline_options import SelectOption, EnforceNewOption
 
 
 # To shut up pep8. We know they aren't used but we need to import them so that
@@ -27,9 +27,9 @@ def build_parser(project_name, models):
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "model", choices=models.keys(),
+        "model", choices=list(models.keys()),
         help=("Which kind of model to meta-optimize. Choices are %s" %
-              str(models.keys())))
+              str(list(models.keys()))))
 
     parser.add_argument("--experiment-name", metavar="experiment-name",
                         help=("Experiment name. Default is %s_{model}" %
@@ -171,7 +171,7 @@ def main_loop(experiment, resilience=10):
         skip = random.randint(1, 5)
         iter_trials = iter(trials)
         logger.debug("Skipping %d trials" % skip)
-        for i in xrange(skip):
+        for i in range(skip):
             try:
                 trial = next(iter_trials)
                 logger.debug("Skipping %d-th with id %d" % (i, trial.id))

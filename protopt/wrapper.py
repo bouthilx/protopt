@@ -3,7 +3,7 @@ import logging
 import os
 import signal
 import subprocess
-from utils import TimeoutInterrupt
+from protopt.utils import TimeoutInterrupt
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def fake_fct_signature(defaults, _run, *args, **kwargs):
 
     # Build command line based on arguments
     arguments = ""
-    for (key, value) in args.iteritems():
+    for (key, value) in args.items():
         if isinstance(value, bool) and value:
             arguments += "--%s " % key
         elif not isinstance(value, bool):

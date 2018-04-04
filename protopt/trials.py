@@ -3,9 +3,9 @@ import logging
 import os
 import sys
 
-import status
-
 from sacred import Experiment
+
+import protopt.status
 
 
 DEBUG = "--debug" in sys.argv
@@ -50,7 +50,7 @@ class Trial(object):
             return self._metrics_backward_compatibility()
 
         metrics = {}
-        for metric_name, scalar_metrics in self.row["metrics"].iteritems():
+        for metric_name, scalar_metrics in self.row["metrics"].items():
             # steps = metrics_row["steps"]
             # key_template = "%s.%s"
 
@@ -66,8 +66,8 @@ class Trial(object):
             timestamps = scalar_metrics["timestamps"]
 
             metrics[metric_name] = dict(
-                epoch=dict(zip(steps, values)),
-                timestamp=dict(zip(timestamps, values)))
+                epoch=dict(list(zip(steps, values))),
+                timestamp=dict(list(zip(timestamps, values))))
 
         # units = self.row["metrics"]["units"]
         # scalars = self.row["metrics"]["scalars"]
@@ -107,18 +107,18 @@ class Trial(object):
             name = metrics_row["name"]
             steps = metrics_row["steps"]
             values = metrics_row["values"]
-            metrics[name] = dict(zip((str(s) for s in steps), values))
+            metrics[name] = dict(list(zip((str(s) for s in steps), values)))
 
         return metrics
 
     def is_completed(self):
-        return self.status in status.COMPLETED
+        return self.status in protopt.status.COMPLETED
 
     def is_runnable(self):
-        return self.status in status.RUNNABLE
+        return self.status in protopt.status.RUNNABLE
 
     def is_queued(self):
-        return self.status in status.QUEUED
+        return self.status in protopt.status.QUEUED
 
     def run(self):
         if not self.is_runnable():

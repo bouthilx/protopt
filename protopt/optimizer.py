@@ -149,7 +149,7 @@ class ValidatedSkoptSpace(SkoptSpace):
         rows = super(ValidatedSkoptSpace, self).rvs(n_samples * 10,
                                                     random_state)
 
-        rows = filter(self.validate_sample, rows)
+        rows = list(filter(self.validate_sample, rows))
         trashed += n_samples * 10 - len(rows)
 
         if len(rows) < n_samples:
@@ -209,10 +209,10 @@ class Optimizer(object):
         self.strategy = strategy
 
     def _build_optimizer(self, **kwargs):
-        print "Building optimizer"
+        print("Building optimizer")
         optimizer = ValidatedSkoptOptimizer(
             base_estimator=GaussianProcessRegressor(**kwargs),
-            dimensions=self.space.get_spaces().values(),
+            dimensions=list(self.space.get_spaces().values()),
             validate_sample=self.space.get_validate_sample_fct()
         )
 

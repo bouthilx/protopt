@@ -4,9 +4,8 @@ from sacred.observers import MongoObserver
 
 import smartdispatch.utils
 
-import status
-
-from utils import get_mongodb_url
+import protopt.status
+from protopt.utils import get_mongodb_url
 
 
 CLUSTER_NAME = smartdispatch.utils.detect_cluster()
@@ -56,7 +55,7 @@ class Database(object):
             options["authSource"] = self.auth_source
 
         mongo_url = get_mongodb_url(
-            zip(self.host_names, self.ports),
+            list(zip(self.host_names, self.ports)),
             user=self.user_name,
             password=self.password)
         # **options)
@@ -90,7 +89,7 @@ class Database(object):
         logger.info("Looking for a new job")
         rows = self.runs.find({
             "status": {
-                "$in": status.RUNNABLE
+                "$in": protopt.status.RUNNABLE
             },
             "$or": [
                 {

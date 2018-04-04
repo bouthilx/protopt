@@ -14,7 +14,7 @@ def options_to_dict(options):
 
 def dict_to_options(setting, options):
 
-    for key, value in setting.iteritems():
+    for key, value in setting.items():
         assert hasattr(options, key), (
             "Setting has a key which is not part of the "
             "options: %s" % key)
@@ -97,7 +97,7 @@ def get_mongodb_url(hosts, user=None, password=None, db=None,
 
     mongodb_url += _add_attribute(db, None, "/")
 
-    options = "&".join("%s=%s" % (k, v) for (k, v) in kwargs.iteritems())
+    options = "&".join("%s=%s" % (k, v) for (k, v) in kwargs.items())
 
     mongodb_url += _add_attribute(
         options, None, "/?" if not (db or None) else "?")
