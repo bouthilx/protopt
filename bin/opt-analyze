@@ -1,0 +1,763 @@
+#!/usr/bin/env python
+from collections import defaultdict
+import argparse
+import datetime
+import getpass
+import logging
+import os
+
+from tqdm import tqdm
+
+import numpy
+
+import matplotlib.pyplot as plt
+from matplotlib.widgets import Slider
+import matplotlib.gridspec as gridspec
+
+from scipy.interpolate import griddata
+
+from skopt.space import Categorical
+
+from protopt.base import build_database
+from protopt.experiment import Experiment
+from protopt.optimizer import Optimizer
+from protopt.utils import try_import
+
+
+logger = logging.getLogger()
+
+
+PIPELINE = [
+    {"$group": {
+        "_id": {
+            "name": "$experiment.name",
+            "status": "$status"
+        },
+        "total": {"$sum": 1},
+        "best": {"$max": "$result"}
+    }},
+    {"$group": {
+         "_id": "$_id.name",
+         "stats": {
+             "$push": {
+                 "status": "$_id.status",
+                 "total": "$total",
+                 "best": "$best"
+             }
+         }
+    }}]
+
+
+def get_stats(database, opt):
+    cursor = database.runs.aggregate(PIPELINE)
+
+    stats = {}
+
+    for row in cursor:
+        row_stats = {}
+        for stat in row["stats"]:
+            row_stats[stat["status"]] = dict(
+                total=stat["total"],
+                best=stat["best"])
+        stats[row["_id"]] = row_stats
+
+    return stats
+
+
+def print_stats(stats, opt):
+
+    msg = "Stats on %s" % datetime.datetime.now()
+    print "-" * (len(msg) + 4)
+    print "  %s" % msg
+    print "-" * (len(msg) + 4)
+    print "\n"
+
+    COLUMNS = (
+        "Model Running Completed Interrupted "
+        "Failed Queued Others Best".split())
+
+    PADDING = ["%20s"] + ["%12s"] * (len(COLUMNS) - 1)
+    CROSS_PADDING = ["%16s"] + ["%8s"] * (len(COLUMNS) - 1)
+
+    CROSS_SEPARATOR = "- -+- -"
+    LINE_SEPARATOR = " | "
+
+    def print_line():
+        print_row(("" for c in COLUMNS), CROSS_SEPARATOR, CROSS_PADDING,
+                  prefix="  ")
+
+    def print_row(values, separator, padding, prefix=""):
+        string = separator.join(padding[i] % v for i, v in enumerate(values))
+        print prefix + string
+
+    print_line()
+    print_row(COLUMNS, LINE_SEPARATOR, PADDING)
+    print_line()
+
+    # print " ", "- -+- -".join(CROSS_PADDING[i] % ""
+    #                           for i, c in enumerate(COLUMNS))
+    # print " | ".join(PADDING % c for c in COLUMNS)
+    # print " ", "- -+- -".join(CROSS_PADDING % "" for c in COLUMNS)
+
+    for model in sorted(stats.keys()):
+        row = [0] * len(COLUMNS)
+        row[0] = model
+
+        for status, results in stats[model].iteritems():
+            try:
+                idx = COLUMNS.index(status.capitalize())
+            except ValueError:
+                idx = -2
+            row[idx] += results['total']
+            row[-1] = max(row[-1], results['best'])
+
+        print_row(row, LINE_SEPARATOR, PADDING)
+        print_line()
+
+    print
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Stats on exploration for paper \"Implicitly Natural\"")
+
+    parser.add_argument(
+        "project")
+
+    parser.add_argument(
+        "module")
+
+    parser.add_argument(
+        "model",
+        help=("Which kind of model architecture is optimized."))
+
+    parser.add_argument("--experiment-name", metavar="experiment-name",
+                        help=("Experiment name. Default is "
+                              "{project}_{module}_{model}"))
+
+    parser.add_argument(
+        "--profiles", nargs="*", default=[],
+        help=("Select profiles to limit possible hyper-parameters."))
+
+    parser.add_argument(
+        "--selections", nargs="*", default=[],
+        help=("Select some hyper-parameters."))
+
+    parser.add_argument(
+        "--validate-on",
+        default="validation_accuracy",
+        help=("Which metric to use to evaluate trials. Default is "
+              "'validation_accuracy.epoch' which means validation accuracy"
+              "of the last epoch."))
+
+    parser.add_argument("--database-name", metavar="db-name",
+                        help=("Database name. "
+                              "Default is {project}_{model}_{exp}"))
+
+    parser.add_argument(
+        "--host-names", default=["localhost"], nargs="*",
+        help="Host where the mongoDB database is to store configurations and "
+             "results")
+
+    parser.add_argument(
+        "--ports", default=[27017], nargs="*", type=int,
+        help="Host for the mongodb database")
+
+    parser.add_argument(
+        "--ssl", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--ssl-ca-file",
+        help="")
+
+    parser.add_argument(
+        "--replica-set",
+        help="")
+
+    parser.add_argument(
+        "--auth-source",
+        help="")
+
+    parser.add_argument(
+        "--user-name", default=getpass.getuser(),
+        help="User name for the mongoDB database.")
+
+    parser.add_argument(
+        "--password", default="",
+        help="Password for the mongoDB database.")
+
+    parser.add_argument('--sleep-interval', type=int, default=60)
+
+    parser.add_argument(
+        '-v', '--verbose', action='count', default=0,
+        help="Print informations about the process.\n"
+             "     -v: INFO\n"
+             "     -vv: DEBUG")
+
+    return parser
+
+
+def parse_args(argv):
+    opt = build_parser().parse_args(argv)
+
+    if opt.verbose == 0:
+        logging.basicConfig(level=logging.WARNING)
+        logger.setLevel(level=logging.WARNING)
+    elif opt.verbose == 1:
+        logging.basicConfig(level=logging.INFO)
+        logger.setLevel(level=logging.INFO)
+    elif opt.verbose == 2:
+        logging.basicConfig(level=logging.DEBUG)
+        logger.setLevel(level=logging.DEBUG)
+
+    if opt.experiment_name is None:
+        opt.experiment_name = "%s_%s_%s" % (opt.project, opt.module,
+                                            opt.model.replace("-", "_"))
+
+    return opt
+
+
+def plot_2_axis(best_set, inputs, n_epochs, dimensions, axe, axis1, axis2):
+    # axe.plot_surface(numpy.log(hp_plots['lr']),
+    #                  numpy.log(hp_plots['prescale']), best_set)
+    # color = numpy.log(numpy.array(best_set)/min(best_set))
+    if len(best_set) == 0:
+        return
+
+    color = (  # numpy.log(
+        ((numpy.array(best_set) - min(best_set)) /
+         (max(best_set) - min(best_set) + .00005)))
+    color = 1. - color
+    # import pdb
+    # pdb.set_trace()
+
+    x, y = inputs
+    x = numpy.array(x)
+    y = numpy.array(y)
+    x_dimension, y_dimension = dimensions
+
+    if is_log(x_dimension):
+        x = numpy.log(x)
+    elif is_cat(x_dimension):
+        x = numpy.array([x_dimension.categories.index(i)
+                         for i in x])
+    if is_log(y_dimension):
+        y = numpy.log(y)
+    elif is_cat(y_dimension):
+        y = numpy.array([y_dimension.categories.index(i)
+                         for i in y])
+
+    # y = numpy.array(hp_plots['prescale'])
+    if is_cat(x_dimension):
+        n_x_points = len(x_dimension.categories)
+    else:
+        n_x_points = 100
+    if is_cat(y_dimension):
+        n_y_points = len(y_dimension.categories)
+    else:
+        n_y_points = 100
+
+    xv, yv = numpy.meshgrid(numpy.linspace(x.min(), x.max(), n_x_points),
+                            numpy.linspace(y.min(), y.max(), n_y_points))
+    grid = griddata((x, y), color, (xv, yv))
+    """
+    # plot 2d
+    fig = plt.figure()
+    axe = plt.gca(projection='3d')
+    axe.plot_surface(xv, yv, grid)
+    axe.set_xlabel('%s (log scale)' % (args.axis1,))
+    axe.set_ylabel('%s (log scale)' % (args.axis2,))
+    """
+
+    # flat
+    # circle_size = 100*numpy.float32(numpy.array(n_epochs))/args.n_epochs + 5.
+    circle_size = 100*numpy.float32(numpy.array(n_epochs)) / max(n_epochs) + 5.
+    if not is_cat(x_dimension) or not is_cat(y_dimension):
+        axe.scatter(x, y, c=color, s=circle_size, marker='o',
+                    edgecolor='black')
+    if not is_cat(x_dimension) and not is_cat(y_dimension):
+        axe.imshow(grid, origin='lower', extent=(x.min(), x.max(), y.min(),
+                   y.max()), interpolation='bilinear', aspect='auto')
+    elif is_cat(x_dimension) and is_cat(y_dimension):
+        x_min = -1
+        x_max = len(x_dimension.categories)
+        y_min = -1
+        y_max = len(y_dimension.categories)
+        grid = x == 0
+        grid = numpy.zeros((len(y_dimension.categories),
+                            len(x_dimension.categories)))
+        for i in range(len(y_dimension.categories)):
+            for j in range(len(x_dimension.categories)):
+                idx, = numpy.where((y == i) * (x == j))
+                if len(idx) > 0:
+                    grid[i, j] = max(color[idx])
+
+        axe.imshow(grid, origin='lower', extent=(x_min, x_max, y_min, y_max),
+                   aspect='auto')
+    else:
+        if is_cat(x_dimension):
+            x_min = -1
+            x_max = len(x_dimension.categories)
+        else:
+            x_min = x.min()
+            x_max = x.max()
+        if is_cat(y_dimension):
+            y_min = -1
+            y_max = len(y_dimension.categories)
+        else:
+            y_min = y.min()
+            y_max = y.max()
+        axe.imshow(grid, origin='lower', extent=(x_min, x_max, y_min, y_max),
+                   aspect='auto')
+
+    axe.set_xlabel('%s%s' %
+                   (axis1,
+                    " (log scale)" if is_log(x_dimension) else ""))
+    axe.set_ylabel('%s%s' %
+                   (axis2,
+                    " (log scale)" if is_log(y_dimension) else ""))
+    # xticks = numpy.array([10**(t / 2) for t in axe.get_xticks()])
+    # xlabels = numpy.exp(xticks) if x_is_log else xticks
+    if is_cat(x_dimension):
+        xticks = numpy.arange(len(x_dimension.categories))
+        xlabels = x_dimension.categories
+    else:
+        xmin = x.min()
+        xmax = x.max()
+        xticks = numpy.linspace(xmin, xmax, 5)
+        xlabels = numpy.exp(xticks) if is_log(x_dimension) else xticks
+        xlabels = [float("%.1e" % tick) for tick in xlabels]
+
+    axe.set_xticks(xticks)
+    axe.set_xticklabels(xlabels)
+
+    # axe.set_xticklabels(['%.0e' % tick for tick in xlabels])
+    ymin = y.min()
+    ymax = y.max()
+    yticks = numpy.linspace(ymin, ymax, 5)
+    print yticks
+    # ylabels = yticks
+    # yticks = numpy.array([10**(t / 2) for t in axe.get_yticks()])
+    # axe.set_xticklabels(['%.0e' % tick for tick in xlabels])
+    # yticks = numpy.array([10**(t / 2) for t in axe.get_yticks()])
+    ylabels = numpy.exp(yticks) if is_log(y_dimension) else yticks
+    axe.set_yticks(yticks)
+    if is_cat(y_dimension):
+        axe.set_yticklabels(dimensions[1].categories)
+    else:
+        axe.set_yticklabels(float("%.1e" % tick) for tick in ylabels)
+
+    if is_cat(y_dimension):
+        yticks = numpy.arange(len(y_dimension.categories))
+        ylabels = y_dimension.categories
+    else:
+        ymin = y.min()
+        ymax = y.max()
+        yticks = numpy.linspace(ymin, ymax, 5)
+        ylabels = numpy.exp(yticks) if is_log(y_dimension) else yticks
+        ylabels = [float("%.1e" % tick) for tick in ylabels]
+
+    axe.set_yticks(yticks)
+    axe.set_yticklabels(ylabels)
+
+    # axe.set_xticklabels(['%.0e' % tick for tick in ylabels])
+
+    # color_valid = numpy.log(numpy.array(best_test)/min(best_test))
+    # grid_valid = griddata((x, y), color_valid, (xv, yv))
+    # fig = plt.figure()
+    # axe = plt.gca()
+    # axe.scatter(x, y, c=color_valid, s=circle_size, marker='o',
+    #             edgecolor='black')
+    # im = axe.imshow(grid_valid, origin='lower', extent=(x.min(), x.max(),
+    #                 y.min(), y.max()),
+    #            interpolation='bilinear', aspect='auto')
+    # axe.set_xlabel('%s (log scale)' % (args.axis1,))
+    # plt.xticks(plt.xticks()[0],
+    #            ['%.0e'%(10**(t/2),) for t in plt.xticks()[0]])
+    # plt.yticks(plt.yticks()[0],
+    #            ['%.0e'%(10**(t/2),) for t in plt.yticks()[0]])
+    # axe.set_ylabel('%s (log scale)' % (args.axis2,))
+    # plt.colorbar(im)
+
+
+def fake_train_signature(_run, *args, **kwargs):
+    return None
+
+
+def build_experiment(name, validate_on, space, database, pool_size):
+    optimizer = Optimizer(pool_size, space)
+
+    dir_path = os.path.join(os.getcwd(), name)
+
+    experiment = Experiment(
+        name=name, dir_path=dir_path, fct=fake_train_signature,
+        validate_on=validate_on, space=space,
+        optimizer=optimizer,
+        default_result=10000.,
+        database=database)
+
+    return experiment
+
+
+def db_iterator(rows):
+    return tqdm(rows, total=rows.count())
+
+
+def main(argv=None):
+    opt = parse_args(argv)
+
+    # TODO refactor to avoid this
+    opt.verbose_process = 2
+    opt.debug = False
+    opt.gpu_id = 0
+
+    opt.experiment_name = "%s_%s" % (opt.module, opt.model.replace("-", "_"))
+
+    model_module = try_import("%s.explorations.%s" %
+                              (opt.project, opt.module))
+
+    database = build_database(opt)
+    space = model_module.Space(opt.model, model_module.DEFAULTS, opt)
+    experiment = build_experiment(
+        opt.experiment_name, opt.validate_on,
+        space, database, pool_size=1)
+
+    # NOTE: Should we remove that?
+    for name, dimension in space.SPACES.iteritems():
+        if hasattr(dimension, "prior") and dimension.prior == "log_uniform":
+            dimension.low = 1e-20
+        elif hasattr(dimension, "low"):
+            dimension.low = -1e20
+
+        if hasattr(dimension, "high"):
+            dimension.high = 1e20
+
+    # count = experiment.database.count(experim
+    trials = experiment.get_trials({}, iterator=db_iterator)
+    # trials = experiment.get_completed_trials(iterator=db_iterator)
+    ids = []
+    metrics = []
+    settings = []
+
+    dimensions = experiment.space.get_spaces()
+
+    if (len(dimensions) > 5 and
+            (len(opt.selections) == 0 or len(opt.selections) > 5)):
+        print "Too many hyper-parameters, select some of them: "
+        print "\n".join(sorted(dimensions.keys()))
+        return
+
+    logger.info("Fetching metrics from db")
+    for trial in trials:
+        ids.append(trial.id)
+        metrics.append(trial.metrics)
+        settings.append(trial.setting)
+
+    plot(experiment, opt.selections, ids, settings, metrics, step=None)
+
+
+def plot(experiment, selections, ids, settings, metrics, step=None):
+
+    hp_plots, filtered_ids, best_validate, curves, dimensions, n_epochs = (
+        compile_metrics(experiment, selections, ids, settings, metrics, step))
+
+    axes = create_figure(hp_plots)
+
+    draw(experiment, axes, hp_plots, filtered_ids, best_validate, curves,
+         dimensions, n_epochs)
+
+    def update(val):
+        hp_plots, filtered_ids, best_validate, curves, dimensions, n_epochs = (
+            compile_metrics(experiment, selections, ids, settings, metrics,
+                            step=val))
+
+        draw(experiment_name, axes, hp_plots, filtered_ids, best_validate,
+             curves, dimensions, n_epochs)
+
+    if len(curves) > 0:
+        max_step = max(curve[0][-1] for curve in curves if len(curve[0]))
+    else:
+        max_step = 0
+    # max_step = 200
+    # import pdb
+    # pdb.set_trace()
+    sfreq = Slider(axes[-1][-1], experiment.get_validation_unit(), 0,
+                   max_step, valinit=max_step)
+    sfreq.on_changed(update)
+
+    plt.show()
+
+
+def compile_metrics(experiment, selections, ids, settings, metrics, step):
+
+    hp_plots = dict()
+
+    dimensions = experiment.space.get_spaces()
+
+    hp_plots.update(
+        (k, []) for k in dimensions.iterkeys()
+        if len(selections) == 0 or k in selections)
+
+    filtered_ids = []
+    best_validate = []
+    curves = []
+    n_epochs = []
+
+    logger.info("Compiling metrics")
+    for i, trial_metrics in enumerate(tqdm(metrics, total=len(metrics))):
+        # print "Fetching %d-th trial with id: %d" % (i, trial.id)
+
+        epoch, result = experiment.get_result(metrics=trial_metrics, step=step)
+        steps, results = experiment.get_curve(metrics=trial_metrics)
+        # print result
+        # experiment.get_curve(trial)
+        # steps, metrics = experiment.get_curve(trial)
+
+        # curves["epochs"].append(steps, metrics)
+        # curves["timetamps"].append(timestamps, metrics)
+
+        # result = 1 - result
+        # if epoch < 50:
+        #     continue
+        print epoch, result
+        if numpy.isnan(result) or result > 50.:  # or result > 0.5:
+            continue
+        filtered_ids.append(ids[i])
+        best_validate.append(result)
+        curves.append((steps, results))
+        n_epochs.append(epoch)
+
+        for k in list(hp_plots.iterkeys()):
+            value = settings[i][k]
+            hp_plots[k].append(value)
+
+    return hp_plots, filtered_ids, best_validate, curves, dimensions, n_epochs
+
+
+def onpick(event):
+    print event.artist.get_offsets()[event.ind]
+    import pdb
+    pdb.set_trace()
+
+
+def create_figure(hp_plots):
+    n_hp_params = len(hp_plots)
+    # fig, axes = plt.subplots(n_hp_params, n_hp_params)
+    fig = plt.figure()  # figsize=(14, 15))
+    cid = fig.canvas.mpl_connect('pick_event', onpick)
+    size = (n_hp_params + 2, n_hp_params)
+    gs = gridspec.GridSpec(*size,
+                           height_ratios=([10] * (n_hp_params + 1)) + [1])
+    axes = []
+    for i in xrange(n_hp_params):
+        x_axes = []
+        for j in xrange(0, n_hp_params):
+            x_axes.append(plt.subplot(gs[i, j]))
+            # if i <= j:
+            #     x_axes.append(plt.subplot(gs[i, j]))
+            # else:
+            #     x_axes.append(None)
+
+        axes.append(x_axes)
+
+    for i in xrange(n_hp_params, n_hp_params + 1):
+        x_axes = []
+        for j in xrange(0, n_hp_params):
+            x_axes.append(plt.subplot(gs[i, j]))
+
+        axes.append(x_axes)
+
+    axes.append([plt.subplot(gs[-1, :])])
+
+    # ax1 = plt.subplot2grid((3, 3), (0, 0), colspan=3)
+    # ax2 = plt.subplot2grid((3, 3), (1, 0), colspan=2)
+    # ax3 = plt.subplot2grid((3, 3), (1, 2), rowspan=2)
+    # ax4 = plt.subplot2grid((3, 3), (2, 0))
+    # ax5 = plt.subplot2grid((3, 3), (2, 1))
+
+    return axes
+
+
+def draw(experiment, axes, hp_plots, ids, best_validate, curves, dimensions,
+         n_epochs, step=None):
+
+    for i, k in enumerate(sorted(hp_plots.keys())):
+
+        axes[i][i].cla()
+        plot_hp(experiment, axes[i][i], k, ids, hp_plots[k], best_validate, dimensions[k])
+
+        axes[-2][i].cla()
+        plot_metric_curve(axes[-2][i],
+                          k, step,
+                          hp_plots[k], best_validate, curves, dimensions[k])
+
+        for j, k_2 in enumerate(sorted(hp_plots.keys())):
+            if i < j:
+                axes[i][j].cla()
+                plot_2_axis(best_validate, [hp_plots[k], hp_plots[k_2]],
+                            n_epochs, [dimensions[k], dimensions[k_2]],
+                            axes[i][j], k, k_2)
+            elif i > j:
+                axes[i][j].cla()
+                plot_2_metric_curve(
+                    axes[i][j], k, k_2, step, [hp_plots[k], hp_plots[k_2]],
+                    best_validate, curves, [dimensions[k], dimensions[k_2]])
+
+        # axes[len(hp_plots) - 1][i].set_xlabel(
+        #     '%s%s' % (k, " (log scale)" if is_log(dimensions[k]) else ""))
+
+    # max_step = max(curve[0][-1] for curve in curves)
+
+
+def is_cat(dimension):
+    return isinstance(dimension, Categorical)
+
+
+def is_log(dimension):
+    return (  # (getattr(dimension, "prior", None) is None) or
+            (getattr(dimension, "prior", None) == "log_uniform"))
+
+
+def plot_2_metric_curve(ax, k, k_2, step, values, best_validate, curves,
+                        dimensions):
+
+    if any(not is_cat(dimension) for dimension in dimensions):
+        # NOTE: Only implemented for categorical dimensions yet
+        return
+
+    # Pick the best value
+    stats = dict()
+
+    for value, value_2, curve in zip(values[0], values[1], curves):
+        key = (value, value_2)
+        if key not in stats:
+            stats[key] = curve
+
+        if min(stats[key][1]) > min(curve[1]):
+            stats[key] = curve
+
+    # TODO: Sort if not categorical
+    for category in dimensions[0].categories:
+        for category_2 in dimensions[1].categories:
+            key = (category, category_2)
+            if key not in stats:
+                continue
+            x, y = stats[key]
+            ax.plot(x, y,
+                    label=("%s=%s,%s=%s" %
+                           (k[:3], str(category),
+                            k_2[:3], str(category_2))))
+
+    ax.axvline(x=step, color="red")
+
+    ax.legend()
+
+
+def plot_metric_curve(ax, k, step, values, best_validate, curves, dimension):
+
+    if not is_cat(dimension):
+        # NOTE: Only implemented for categorical dimensions yet
+        return
+
+    # Pick the best value
+    stats = dict()
+    for value, result, curve in zip(values, best_validate, curves):
+        if value not in stats:
+            stats[value] = dict(result=result, curve=curve)
+
+        if min(stats[value]["curve"][1]) > min(curve[1]):
+            stats[value] = dict(result=result, curve=curve)
+
+    # TODO: Sort if not categorical
+    for category in dimension.categories:
+        if category not in stats:
+            continue
+        x, y = stats[category]["curve"]
+        ax.plot(x, y, label="%s=%s" % (k, str(category)))
+
+    ax.axvline(x=step, color="red")
+
+    ax.legend()
+
+
+def plot_hp_bar(ax, k, values, metrics, dimension):
+
+    stats = defaultdict(list)
+    for value, metric in zip(values, metrics):
+        stats[value].append(metric)
+
+    x = []
+    y = []
+    best = []
+    stds = []
+    for value, metrics in stats.iteritems():
+        x.append(value)
+        y.append(numpy.mean(metrics))
+        best.append(numpy.min(metrics))
+        stds.append(numpy.std(metrics))
+
+    # ax.bar(numpy.arange(len(x)), y, width=0.45, yerr=stds)
+    ax.boxplot([stats[category] for category in dimension.categories])
+
+    if "both" in dimension.categories:
+        import pdb
+        pdb.set_trace()
+
+    ax.set_xticks(numpy.arange(len(x)) + 1)
+    ax.set_xticklabels(dimension.categories)
+
+    # ax.bar(numpy.arange(len(x)) + 0.45, best, width=0.45)
+
+    # ax.set_ylim([min(best) * 0.90, max(y + best) * 1.05])
+
+
+def plot_hp(experiment, ax, k, ids, values, accuracies, dimension):
+
+    if is_cat(dimension):
+        plot_hp_bar(ax, k, values, accuracies, dimension)
+
+    else:
+
+        # For real/int
+        x = numpy.array(values)
+
+        if is_log(dimension):
+            x = numpy.log(x)
+
+        xmin = x.min()
+        xmax = x.max()
+        xticks = numpy.linspace(xmin, xmax, 5)
+        xlabels = numpy.exp(xticks) if is_log(dimension) else xticks
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(float("%.1e" % tick) for tick in xlabels)
+
+        # ax.set_xscale('log')
+        # ax.set_yscale('log')
+        ax.set_xlabel(k)
+
+        print dimension
+        print k
+        print x
+        print accuracies
+        artist = ax.scatter(x, accuracies, c='r', label='valid', picker=5)
+        setattr(artist, 'ids', ids)
+        setattr(artist, 'experiment', experiment)
+        # ax.set_ylim([0.1,10])
+        ax.set_ylabel('Accuracy')
+        # ax.legend()
+
+        #   # for log
+
+        # for categorical
+
+        #   # for log
+        pass
+
+
+def plot_hp_correlation():
+    pass
+
+
+if __name__ == "__main__":
+    main()
