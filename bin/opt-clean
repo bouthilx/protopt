@@ -1,0 +1,203 @@
+#!/usr/bin/env python
+import argparse
+import copy
+import datetime
+import getpass
+import logging
+import re
+import time
+
+from tqdm import tqdm
+
+from impn.explorations.base import build_database
+
+
+logger = logging.getLogger()
+
+
+def clean_running(collection, opt):
+    result = collection.update_many(
+        {
+            "status": "RUNNING",
+            "heartbeat": {
+                "$lte": datetime.datetime.utcnow() - datetime.timedelta(hours=2)
+                }
+        },
+        {
+            "$set": {"status": "INTERRUPTED"},
+        })
+
+    if result.acknowledged:
+        print "%d dropped trials found" % result.matched_count
+        print "%d dropped trials set to INTERRUPTED" % result.modified_count
+    else:
+        print "update failed"
+
+
+def clean_interrupteds(collection, opt):
+    if opt.purge_interrupteds:
+        result = collection.delete_many({"status": "INTERRUPTED"})
+        if result.acknowledged:
+            print "%d interrupted trials deleted" % result.deleted_count
+        else:
+            print "deletion failed"
+
+
+def clean_queued(collection, opt):
+    if opt.purge_queueds:
+        result = collection.delete_many({"status": "QUEUED"})
+        if result.acknowledged:
+            print "%d queued trials deleted" % result.deleted_count
+        else:
+            print "deletion failed"
+
+
+def clean_failed(collection, opt):
+    if opt.purge_failed:
+        result = collection.delete_many({"status": "FAILED"})
+        if result.acknowledged:
+            print "%d failed trials deleted" % result.deleted_count
+        else:
+            print "deletion failed"
+    else:
+        cursor = collection.find(
+            {
+                "status": "FAILED",
+                "heartbeat": {
+                    "$lte": datetime.datetime.utcnow() - datetime.timedelta(days=1)
+                }
+            }, {
+                "fail_trace": 1
+            })
+
+        n_trials = cursor.count()
+        print "%d failed trials found" % n_trials
+
+        errors = set()
+        for row in tqdm(cursor, total=n_trials):
+            if row["fail_trace"][-1] not in errors:
+                errors.add(row["fail_trace"][-1])
+            else:
+                collection.delete_one({"_id": row["_id"]})
+
+        print "%d failed trials deleted" % (n_trials - len(errors))
+
+
+def clean(database, opt):
+
+    database_exps_regex = re.compile(r"^%s_" % opt.project_name)
+
+    collection_names = database.runs.database.collection_names()
+    collection_names = filter(database_exps_regex.match, collection_names)
+
+    for collection_name in collection_names:
+        runs = database.runs.database[collection_name]
+
+        print collection_name
+    
+        clean_running(runs, opt)
+
+        clean_interrupteds(runs, opt)
+
+        clean_queued(runs, opt)
+
+        clean_failed(runs, opt)
+
+        print
+    
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        description="Stats on exploration for paper \"Implicitly Natural\"")
+
+    parser.add_argument(
+        "project_name",
+        help="")
+
+    parser.add_argument(
+        "--purge-interrupteds", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--purge-queueds", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--purge-failed", action="store_true",
+        help="")
+
+    parser.add_argument("--database-name", metavar="db-name",
+                        help="Database name. Default is impn_mlp_{model}")
+
+    parser.add_argument(
+        "--host-names", default=["localhost"], nargs="*",
+        help="Host where the mongoDB database is to store configurations and "
+             "results")
+
+    parser.add_argument(
+        "--ports", default=[27017], nargs="*", type=int,
+        help="Host for the mongodb database")
+
+    parser.add_argument(
+        "--ssl", action="store_true",
+        help="")
+
+    parser.add_argument(
+        "--ssl-ca-file",
+        help="")
+
+    parser.add_argument(
+        "--replica-set",
+        help="")
+
+    parser.add_argument(
+        "--auth-source",
+        help="")
+
+    parser.add_argument(
+        "--user-name", default=getpass.getuser(),
+        help="User name for the mongoDB database.")
+
+    parser.add_argument(
+        "--password", default="",
+        help="Password for the mongoDB database.")
+
+    parser.add_argument('--sleep-interval', type=int, default=60)
+
+    parser.add_argument(
+        '-v', '--verbose', action='count', default=0,
+        help="Print informations about the process.\n"
+             "     -v: INFO\n"
+             "     -vv: DEBUG")
+
+    return parser
+
+
+def parse_args(argv):
+    opt = build_parser().parse_args(argv)
+
+    if opt.verbose == 0:
+        logging.basicConfig(level=logging.WARNING)
+        logger.setLevel(level=logging.WARNING)
+    elif opt.verbose == 1:
+        logging.basicConfig(level=logging.INFO)
+        logger.setLevel(level=logging.INFO)
+    elif opt.verbose == 2:
+        logging.basicConfig(level=logging.DEBUG)
+        logger.setLevel(level=logging.DEBUG)
+
+    return opt
+
+
+def main(argv=None):
+
+    opt = parse_args(argv)
+
+    opt.experiment_name = "dummy"
+    database = build_database(opt)
+    opt.experiment_name = None
+
+    clean(database, opt)
+
+if __name__ == "__main__":
+    main()
